@@ -1,17 +1,18 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 
 // --- Configuration ---
-// v1beta is the most compatible endpoint for gemini-1.5-flash
-const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+// gemini-1.5-flash has been fully retired by Google (all 1.0/1.5 models return 404).
+// gemini-2.5-flash is the current stable, free-tier-eligible flash model.
+const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 const THEME = {
-  bg: "#0f172a",         
-  card: "#1e293b",       
-  border: "#334155",     
-  text: "#f8fafc",       
-  textMuted: "#94a3b8",  
-  primary: "#818cf8",    
-  success: "#10b981",    
+  bg: "#0f172a",
+  card: "#1e293b",
+  border: "#334155",
+  text: "#f8fafc",
+  textMuted: "#94a3b8",
+  primary: "#818cf8",
+  success: "#10b981",
   danger: "#ef4444",
   accent: "#4f46e5"
 };
@@ -24,16 +25,29 @@ function robustParseJSON(rawStr) {
   } catch (e) {
     const jsonMatch = rawStr.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      try { return JSON.parse(jsonMatch[0]); } 
+      try { return JSON.parse(jsonMatch[0]); }
       catch (e2) { throw new Error("AI data error. Please try again."); }
     }
     throw new Error("Invalid AI Response. Please try again.");
   }
 }
 
+// Waits for a window global to exist (e.g. pdf.js/mermaid/katex loaded from a <script> tag)
+function waitForGlobal(name, { timeout = 15000, interval = 150 } = {}) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      if (window[name]) return resolve(window[name]);
+      if (Date.now() - start > timeout) return reject(new Error(`${name} failed to load. Check your connection and refresh.`));
+      setTimeout(check, interval);
+    };
+    check();
+  });
+}
+
 async function extractTextFromPDF(file) {
+  await waitForGlobal("pdfjsLib");
   const arrayBuffer = await file.arrayBuffer();
-  // window. ensures Vercel doesn't fail the build
   const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let text = "";
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -59,25 +73,44 @@ const MathRenderer = ({ text }) => {
       });
     }
   }, [text]);
-  return <div ref={containerRef} style={{ lineHeight: 1.8, color: THEME.text }} dangerouslySetInnerHTML={{ __html: text.replace(/\n/g, '<br/>') }} />;
+  return (
+    <div
+      ref={containerRef}
+      style={{ lineHeight: 1.8, color: THEME.text }}
+      dangerouslySetInnerHTML={{ __html: (text || "").replace(/\n/g, "<br/>") }}
+    />
+  );
 };
 
 const MermaidRenderer = ({ chart }) => {
   const [svg, setSvg] = useState("");
+  const [error, setError] = useState(false);
   const id = useMemo(() => `mer-` + Math.random().toString(36).substr(2, 9), []);
   useEffect(() => {
+    let cancelled = false;
     const renderChart = async () => {
-      if (window.mermaid && chart) {
-        try {
-          window.mermaid.initialize({ theme: 'dark', startOnLoad: false });
-          const { svg: renderedSvg } = await window.mermaid.render(id, chart);
-          setSvg(renderedSvg);
-        } catch (e) { console.error("Visual error:", e); }
+      if (!chart) return;
+      try {
+        await waitForGlobal("mermaid");
+        window.mermaid.initialize({ theme: "dark", startOnLoad: false });
+        const { svg: renderedSvg } = await window.mermaid.render(id, chart);
+        if (!cancelled) setSvg(renderedSvg);
+      } catch (e) {
+        console.error("Visual error:", e);
+        if (!cancelled) setError(true);
       }
     };
     renderChart();
+    return () => { cancelled = true; };
   }, [chart, id]);
-  return <div style={{ background: '#000', padding: '20px', borderRadius: '12px', border: `1px solid ${THEME.border}`, margin: '20px 0', display: 'flex', justifyContent: 'center', overflowX: 'auto' }} dangerouslySetInnerHTML={{ __html: svg }} />;
+
+  if (error) return null; // fail silently rather than breaking the lesson view
+  return (
+    <div
+      style={{ background: "#000", padding: "20px", borderRadius: "12px", border: `1px solid ${THEME.border}`, margin: "20px 0", display: "flex", justifyContent: "center", overflowX: "auto" }}
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
 };
 
 // --- Main App ---
@@ -95,6 +128,8 @@ export default function App() {
   });
   const [notesContent, setNotesContent] = useState("");
   const [examContent, setExamContent] = useState("");
+  const [notesFileNames, setNotesFileNames] = useState([]);
+  const [examFileNames, setExamFileNames] = useState([]);
 
   const [screen, setScreen] = useState(curriculum ? "curriculum" : "setup");
   const [loading, setLoading] = useState(false);
@@ -120,10 +155,18 @@ export default function App() {
       "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
     ];
     scripts.forEach(src => {
-      const s = document.createElement("script"); s.src = src; s.async = false; document.head.appendChild(s);
+      // avoid injecting duplicate scripts if this effect ever re-runs
+      if (document.querySelector(`script[src="${src}"]`)) return;
+      const s = document.createElement("script"); s.src = src; s.async = false;
+      document.head.appendChild(s);
     });
-    const link = document.createElement("link"); link.rel = "stylesheet"; link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
-    document.head.appendChild(link);
+    if (!document.querySelector('link[data-katex-css]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
+      link.setAttribute("data-katex-css", "true");
+      document.head.appendChild(link);
+    }
 
     const timer = setInterval(() => {
       if (window.pdfjsLib) {
@@ -135,14 +178,17 @@ export default function App() {
   }, []);
 
   const callAI = async (messages, tutorRules) => {
-    // INJECTION STRATEGY: Combine rules with the user message to bypass API field errors
-    const combinedPrompt = `TUTOR RULES: 
-    1. Act as a STEM expert. 
-    2. Use LaTeX math ($). 
-    3. Use Mermaid visuals. 
-    4. Use analogies, no jargon. 
+    if (!apiKey.trim()) {
+      throw new Error("Please enter your Gemini API key first.");
+    }
+
+    const combinedPrompt = `TUTOR RULES:
+    1. Act as a STEM expert.
+    2. Use LaTeX math ($).
+    3. Use Mermaid visuals.
+    4. Use analogies, no jargon.
     5. ${tutorRules}
-    
+
     USER REQUEST: ${messages[messages.length - 1].content}`;
 
     const payload = {
@@ -153,34 +199,77 @@ export default function App() {
       generationConfig: { temperature: 0.2 }
     };
 
-    const res = await fetch(`${API_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    let res;
+    try {
+      res = await fetch(`${API_URL}?key=${encodeURIComponent(apiKey)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    } catch (networkErr) {
+      throw new Error("Network error reaching Gemini API. Check your connection and try again.");
+    }
 
     const d = await res.json();
-    if (d.error) throw new Error(d.error.message);
-    return d.candidates[0].content.parts[0].text;
+
+    if (!res.ok || d.error) {
+      throw new Error(d.error?.message || `Gemini API request failed (status ${res.status}).`);
+    }
+
+    const candidate = d.candidates?.[0];
+    if (!candidate) {
+      throw new Error("Gemini returned no response (it may have been blocked by safety filters). Try rephrasing.");
+    }
+    if (candidate.finishReason === "SAFETY") {
+      throw new Error("Gemini blocked this response for safety reasons. Try rephrasing your notes or question.");
+    }
+
+    const textPart = candidate.content?.parts?.[0]?.text;
+    if (!textPart) {
+      throw new Error("Gemini returned an empty response. Please try again.");
+    }
+    return textPart;
   };
 
   const handleFileUpload = async (e, type) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
     setLoading(true);
     setLoadingMsg(`Analyzing ${type}...`);
     let combined = "";
-    for (let file of Array.from(e.target.files)) {
-      const text = await extractTextFromPDF(file);
-      combined += `\n[SOURCE: ${file.name}]\n${text}\n`;
+    try {
+      for (let file of files) {
+        const text = await extractTextFromPDF(file);
+        combined += `\n[SOURCE: ${file.name}]\n${text}\n`;
+      }
+      if (type === "Notes") {
+        setNotesContent(combined);
+        setNotesFileNames(files.map(f => f.name));
+      } else {
+        setExamContent(combined);
+        setExamFileNames(files.map(f => f.name));
+      }
+    } catch (err) {
+      alert("Couldn't read that PDF: " + err.message);
+    } finally {
+      setLoading(false);
+      // allow re-selecting the same file(s) later
+      e.target.value = "";
     }
-    type === "Notes" ? setNotesContent(combined) : setExamContent(combined);
-    setLoading(false);
   };
 
   const buildCurriculum = async () => {
+    if (!subject.trim()) { alert("Please enter a subject first."); return; }
     setLoading(true); setLoadingMsg("Generating Learning Path...");
     try {
-      const res = await callAI([{ role: "user", content: `Subject: ${subject}. Notes: ${notesContent.substring(0, 10000)}. Return JSON ONLY: {"topics": [{"name": "Topic", "subtopics": [{"name": "Subtopic", "difficulty": 3, "estimatedMinutes": 20}]}]}` }], "Return JSON.");
-      setCurriculum(robustParseJSON(res));
+      const res = await callAI(
+        [{ role: "user", content: `Subject: ${subject}. Notes: ${notesContent.substring(0, 10000)}. Return JSON ONLY: {"topics": [{"name": "Topic", "subtopics": [{"name": "Subtopic", "difficulty": 3, "estimatedMinutes": 20}]}]}` }],
+        "Return JSON."
+      );
+      const parsed = robustParseJSON(res);
+      if (!parsed?.topics?.length) throw new Error("AI returned an empty curriculum. Try again or add more notes.");
+      setCurriculum(parsed);
       setScreen("curriculum");
     } catch (e) { alert("API Error: " + e.message); }
     setLoading(false);
@@ -207,98 +296,146 @@ export default function App() {
     const st = curriculum.topics[activePath.tIdx].subtopics[activePath.sIdx];
     const style = examContent ? `Mimic style: ${examContent.substring(0, 4000)}` : "";
     try {
-      const res = await callAI([{ role: "user", content: `${style}\nGenerate question for ${st.name}. JSON: {"question":"...","modelAnswer":"...","hint":"..."}` }], "Return JSON.");
-      setSessionData(prev => ({ ...prev, question: robustParseJSON(res) }));
+      const res = await callAI(
+        [{ role: "user", content: `${style}\nGenerate question for ${st.name}. JSON: {"question":"...","modelAnswer":"...","hint":"..."}` }],
+        "Return JSON."
+      );
+      const parsed = robustParseJSON(res);
+      setSessionData(prev => ({ ...prev, question: parsed }));
       setStudentAnswer(""); setFeedback(null); setPhase("question");
     } catch (e) { alert(e.message); }
     setLoading(false);
   };
 
-  const inputStyle = { width: '100%', padding: '14px', borderRadius: '12px', border: `1px solid ${THEME.border}`, background: THEME.bg, color: THEME.text, marginBottom: '20px', boxSizing: 'border-box' };
-  const cardStyle = { background: THEME.card, border: `1px solid ${THEME.border}`, padding: '25px', borderRadius: '20px' };
-  const btnStyle = { width: '100%', padding: '14px', borderRadius: '12px', background: THEME.primary, color: '#fff', border: 'none', fontWeight: 'bold', cursor: 'pointer' };
+  const handleSubmitAnswer = async () => {
+    if (!studentAnswer.trim()) { alert("Write an answer first."); return; }
+    setLoading(true);
+    try {
+      const p = `Q: ${sessionData.question.question}\nA: ${studentAnswer}\nCorrect: ${sessionData.question.modelAnswer}`;
+      const res = await callAI([{ role: "user", content: p }], 'Grade strictly. JSON: {"correct":boolean, "feedback":"..."}');
+      setFeedback(robustParseJSON(res));
+    } catch (e) { alert(e.message); }
+    setLoading(false);
+  };
+
+  const totalSubtopics = curriculum ? curriculum.topics.reduce((a, t) => a + t.subtopics.length, 0) : 0;
+  const progressPct = totalSubtopics > 0 ? Math.round((masteredKeys.size / totalSubtopics) * 100) : 0;
+
+  const inputStyle = { width: "100%", padding: "14px", borderRadius: "12px", border: `1px solid ${THEME.border}`, background: THEME.bg, color: THEME.text, marginBottom: "20px", boxSizing: "border-box" };
+  const cardStyle = { background: THEME.card, border: `1px solid ${THEME.border}`, padding: "25px", borderRadius: "20px" };
+  const btnStyle = { width: "100%", padding: "14px", borderRadius: "12px", background: THEME.primary, color: "#fff", border: "none", fontWeight: "bold", cursor: "pointer" };
+  const btnDisabledStyle = { ...btnStyle, opacity: 0.5, cursor: "not-allowed" };
 
   if (screen === "setup") return (
-    <div style={{ minHeight: '100vh', background: THEME.bg, color: THEME.text, padding: '40px 20px', fontFamily: 'sans-serif' }}>
-      <div style={{ maxWidth: 500, margin: '0 auto', ...cardStyle }}>
-        <h2 style={{ marginBottom: '10px' }}>STEM Tutor AI</h2>
-        <input type="password" placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} style={inputStyle} />
+    <div style={{ minHeight: "100vh", background: THEME.bg, color: THEME.text, padding: "40px 20px", fontFamily: "sans-serif" }}>
+      <div style={{ maxWidth: 500, margin: "0 auto", ...cardStyle }}>
+        <h2 style={{ marginBottom: "10px" }}>STEM Tutor AI</h2>
+        <input type="password" placeholder="Gemini API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} style={inputStyle} />
         <input placeholder="Subject Title" value={subject} onChange={e => setSubject(e.target.value)} style={inputStyle} />
-        <label style={{ fontSize: '12px', color: THEME.textMuted }}>Lecture Notes (PDF)</label>
-        <input type="file" multiple accept=".pdf" onChange={(e) => handlePdfUpload(e, "Notes")} style={{ ...inputStyle, padding: '10px' }} />
-        <label style={{ fontSize: '12px', color: THEME.textMuted }}>Past Papers (PDF)</label>
-        <input type="file" multiple accept=".pdf" onChange={(e) => handlePdfUpload(e, "Exams")} style={{ ...inputStyle, padding: '10px' }} />
-        <button onClick={buildCurriculum} disabled={loading || !subject} style={btnStyle}>Start Learning</button>
+
+        <label style={{ fontSize: "12px", color: THEME.textMuted }}>Lecture Notes (PDF)</label>
+        <input type="file" multiple accept=".pdf" onChange={(e) => handleFileUpload(e, "Notes")} style={{ ...inputStyle, padding: "10px" }} />
+        {notesFileNames.length > 0 && (
+          <div style={{ fontSize: "12px", color: THEME.success, marginTop: "-12px", marginBottom: "16px" }}>
+            Loaded: {notesFileNames.join(", ")}
+          </div>
+        )}
+
+        <label style={{ fontSize: "12px", color: THEME.textMuted }}>Past Papers (PDF)</label>
+        <input type="file" multiple accept=".pdf" onChange={(e) => handleFileUpload(e, "Exams")} style={{ ...inputStyle, padding: "10px" }} />
+        {examFileNames.length > 0 && (
+          <div style={{ fontSize: "12px", color: THEME.success, marginTop: "-12px", marginBottom: "16px" }}>
+            Loaded: {examFileNames.join(", ")}
+          </div>
+        )}
+
+        <button onClick={buildCurriculum} disabled={loading || !subject.trim()} style={(loading || !subject.trim()) ? btnDisabledStyle : btnStyle}>
+          {loading ? loadingMsg || "Working..." : "Start Learning"}
+        </button>
       </div>
     </div>
   );
 
   if (screen === "curriculum") return (
-    <div style={{ minHeight: '100vh', background: THEME.bg, color: THEME.text, padding: '60px 20px' }}>
-      <div style={{ maxWidth: 900, margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px' }}>
+    <div style={{ minHeight: "100vh", background: THEME.bg, color: THEME.text, padding: "60px 20px" }}>
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "40px" }}>
           <h1>{subject}</h1>
-          <div style={{ fontSize: '24px', fontWeight: 'bold', color: THEME.primary }}>{Math.round((masteredKeys.size / curriculum.topics.reduce((a,t)=>a+t.subtopics.length,0)) * 100)}%</div>
+          <div style={{ fontSize: "24px", fontWeight: "bold", color: THEME.primary }}>{progressPct}%</div>
         </div>
         {curriculum.topics.map((topic, tIdx) => (
-          <div key={tIdx} style={{ marginBottom: '40px' }}>
-            <h3 style={{ fontSize: '13px', color: THEME.textMuted, textTransform: 'uppercase' }}>{topic.name}</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '15px' }}>
+          <div key={tIdx} style={{ marginBottom: "40px" }}>
+            <h3 style={{ fontSize: "13px", color: THEME.textMuted, textTransform: "uppercase" }}>{topic.name}</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "15px" }}>
               {topic.subtopics.map((st, sIdx) => (
-                <div key={sIdx} onClick={() => handleStartSubtopic(tIdx, sIdx)} style={{ ...cardStyle, padding: '20px', cursor: 'pointer', border: `1px solid ${masteredKeys.has(`${tIdx}-${sIdx}`) ? THEME.success : THEME.border}` }}>
+                <div
+                  key={sIdx}
+                  onClick={() => handleStartSubtopic(tIdx, sIdx)}
+                  style={{ ...cardStyle, padding: "20px", cursor: "pointer", border: `1px solid ${masteredKeys.has(`${tIdx}-${sIdx}`) ? THEME.success : THEME.border}` }}
+                >
                   {st.name}
                 </div>
               ))}
             </div>
           </div>
         ))}
-        <button onClick={() => { localStorage.clear(); window.location.reload(); }} style={{ color: THEME.danger, background: 'none', border: 'none', cursor: 'pointer', marginTop: '20px' }}>Reset Progress</button>
+        <button onClick={() => { localStorage.clear(); window.location.reload(); }} style={{ color: THEME.danger, background: "none", border: "none", cursor: "pointer", marginTop: "20px" }}>
+          Reset Progress
+        </button>
       </div>
+      {loading && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.9)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, color: THEME.text }}>
+          {loadingMsg}
+        </div>
+      )}
     </div>
   );
 
   if (screen === "learn") return (
-    <div style={{ minHeight: '100vh', background: THEME.bg, color: THEME.text, padding: '40px 20px' }}>
-      <div style={{ maxWidth: 800, margin: '0 auto' }}>
-        <button onClick={() => setScreen("curriculum")} style={{ background: 'none', border: 'none', color: THEME.textMuted, cursor: 'pointer', marginBottom: '20px' }}>← Back</button>
+    <div style={{ minHeight: "100vh", background: THEME.bg, color: THEME.text, padding: "40px 20px" }}>
+      <div style={{ maxWidth: 800, margin: "0 auto" }}>
+        <button onClick={() => setScreen("curriculum")} style={{ background: "none", border: "none", color: THEME.textMuted, cursor: "pointer", marginBottom: "20px" }}>← Back</button>
         <div style={cardStyle}>
           {phase === "notes" ? (
             <div>
               <h2 style={{ color: THEME.primary }}>{curriculum.topics[activePath.tIdx].subtopics[activePath.sIdx].name}</h2>
               {sessionData.diagram && <MermaidRenderer chart={sessionData.diagram} />}
               <MathRenderer text={sessionData.notes} />
-              <button style={{ ...btnStyle, marginTop: '30px' }} onClick={() => handleFetchQuestion(false)}>Go to Practice</button>
+              <button style={{ ...btnStyle, marginTop: "30px" }} onClick={() => handleFetchQuestion(false)}>Go to Practice</button>
             </div>
-          ) : (
+          ) : sessionData.question ? (
             <div>
               <h3><MathRenderer text={sessionData.question.question} /></h3>
-              <textarea value={studentAnswer} onChange={e => setStudentAnswer(e.target.value)} style={{ ...inputStyle, height: '140px' }} placeholder="Your answer..." />
+              <textarea value={studentAnswer} onChange={e => setStudentAnswer(e.target.value)} style={{ ...inputStyle, height: "140px" }} placeholder="Your answer..." />
               {!feedback ? (
-                <button style={btnStyle} onClick={async () => {
-                  setLoading(true);
-                  try {
-                    const p = `Q: ${sessionData.question.question}\nA: ${studentAnswer}\nCorrect: ${sessionData.question.modelAnswer}`;
-                    const res = await callAI([{ role: "user", content: p }], "Grade strictly. JSON: {\"correct\":boolean, \"feedback\":\"...\"}");
-                    setFeedback(robustParseJSON(res));
-                  } catch(e) { alert(e.message); }
-                  setLoading(false);
-                }}>Submit</button>
+                <button style={btnStyle} onClick={handleSubmitAnswer}>Submit</button>
               ) : (
-                <div style={{ marginTop: '20px', padding: '20px', borderRadius: '15px', background: feedback.correct ? '#064e3b' : '#450a0a' }}>
+                <div style={{ marginTop: "20px", padding: "20px", borderRadius: "15px", background: feedback.correct ? "#064e3b" : "#450a0a" }}>
                   <p>{feedback.feedback}</p>
-                  <button style={{ ...btnStyle, marginTop: '15px', background: '#fff', color: '#000' }} onClick={() => {
-                    if (feedback.correct) {
-                      setMasteredKeys(new Set(masteredKeys).add(`${activePath.tIdx}-${activePath.sIdx}`));
-                      setScreen("curriculum");
-                    } else { setFeedback(null); setPhase("notes"); }
-                  }}>Continue</button>
+                  <button
+                    style={{ ...btnStyle, marginTop: "15px", background: "#fff", color: "#000" }}
+                    onClick={() => {
+                      if (feedback.correct) {
+                        setMasteredKeys(new Set(masteredKeys).add(`${activePath.tIdx}-${activePath.sIdx}`));
+                        setScreen("curriculum");
+                      } else {
+                        setFeedback(null); setPhase("notes");
+                      }
+                    }}
+                  >
+                    Continue
+                  </button>
                 </div>
               )}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
-      {loading && <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>{loadingMsg}</div>}
+      {loading && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.9)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+          {loadingMsg}
+        </div>
+      )}
     </div>
   );
 
