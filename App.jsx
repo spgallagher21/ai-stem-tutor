@@ -257,14 +257,19 @@ async function extractTextFromPDF(file) {
 
 // --- Gemini call (via server proxy), with client-side retry for network blips ---
 
-async function callGemini({ contents, generationConfig }, { retries = 2 } = {}) {
+async function callGemini({ contents, generationConfig, apiKey }, { retries = 2 } = {}) {
+  const trimmedApiKey = (apiKey || "").trim();
+  if (!trimmedApiKey) {
+    throw new Error("Enter your Gemini API key before using the tutor.");
+  }
+
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(GENERATE_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents, generationConfig }),
+        body: JSON.stringify({ contents, generationConfig, apiKey: trimmedApiKey }),
       });
 
       let data;
@@ -387,6 +392,7 @@ const CollapsibleList = ({ title, items, accentColor }) => {
 // --- Main App ---
 
 export default function App() {
+  const [geminiApiKey, setGeminiApiKey] = useState(() => sessionStorage.getItem("stem-gemini-api-key") || "");
   const [subject, setSubject] = useState(() => localStorage.getItem("stem-subject") || "");
   const [curriculum, setCurriculum] = useState(() => {
     const saved = localStorage.getItem("stem-curriculum");
@@ -416,6 +422,14 @@ export default function App() {
   const [studentAnswer, setStudentAnswer] = useState("");
   const [selectedOption, setSelectedOption] = useState(null);
   const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    if (geminiApiKey.trim()) {
+      sessionStorage.setItem("stem-gemini-api-key", geminiApiKey);
+    } else {
+      sessionStorage.removeItem("stem-gemini-api-key");
+    }
+  }, [geminiApiKey]);
 
   useEffect(() => {
     localStorage.setItem("stem-subject", subject);
@@ -494,6 +508,7 @@ export default function App() {
 LECTURE NOTES:
 ${notesForPrompt}`;
       const res = await callGemini({
+        apiKey: geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.2, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
       });
@@ -520,6 +535,7 @@ ${notesForPrompt}`;
 PAST PAPERS:
 ${examForPrompt}`;
       const res = await callGemini({
+        apiKey: geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: EXAM_PLAN_SCHEMA },
       });
@@ -556,6 +572,7 @@ ${priorMistakesNote}
 LECTURE NOTES:
 ${context}`;
       const res = await callGemini({
+        apiKey: geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA },
       });
@@ -597,6 +614,7 @@ If the type is multiple_choice: include exactly 4 plausible options in "options"
 Base the question on this source material:
 ${context}`;
       const res = await callGemini({
+        apiKey: geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.4, responseMimeType: "application/json", responseSchema: QUESTION_SCHEMA },
       });
@@ -662,6 +680,7 @@ STUDENT ANSWER: ${studentAnswer}
 
 Give partial credit where deserved — don't just mark right/wrong. If the answer is wrong or partial, identify the specific misconception. Classify the mistake as exactly one of: concept_gap (doesn't understand the underlying idea), careless_error (understood it but made a slip), misread_question (answered something other than what was asked), or none (fully correct). State plainly what the student should review next.`;
       const res = await callGemini({
+        apiKey: geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: GRADING_SCHEMA },
       });
@@ -704,8 +723,17 @@ Give partial credit where deserved — don't just mark right/wrong. If the answe
       <div style={{ maxWidth: 500, margin: "0 auto", ...cardStyle }}>
         <h2 style={{ marginBottom: "6px" }}>STEM Tutor AI</h2>
         <p style={{ fontSize: "13px", color: THEME.textMuted, marginTop: 0, marginBottom: "20px" }}>
-          Your Gemini key is configured server-side (Vercel env var) — nothing to enter here.
+          Enter your own Gemini API key. It stays in this browser session and is sent only to generate tutor responses.
         </p>
+        <input
+          type="password"
+          placeholder="Gemini API Key"
+          value={geminiApiKey}
+          onChange={(e) => setGeminiApiKey(e.target.value)}
+          style={inputStyle}
+          aria-label="Gemini API key"
+          autoComplete="off"
+        />
         <input placeholder="Subject Title" value={subject} onChange={(e) => setSubject(e.target.value)} style={inputStyle} aria-label="Subject title" />
 
         <label style={{ fontSize: "12px", color: THEME.textMuted }}>Lecture Notes (PDF)</label>
@@ -724,7 +752,7 @@ Give partial credit where deserved — don't just mark right/wrong. If the answe
           </div>
         )}
 
-        <button onClick={buildCurriculum} disabled={loading || !subject.trim()} style={(loading || !subject.trim()) ? btnDisabledStyle : btnStyle}>
+        <button onClick={buildCurriculum} disabled={loading || !subject.trim() || !geminiApiKey.trim()} style={(loading || !subject.trim() || !geminiApiKey.trim()) ? btnDisabledStyle : btnStyle}>
           {loading ? loadingMsg || "Working..." : "Start Learning"}
         </button>
       </div>
@@ -739,6 +767,15 @@ Give partial credit where deserved — don't just mark right/wrong. If the answe
           <h1>{subject}</h1>
           <div style={{ fontSize: "24px", fontWeight: "bold", color: THEME.primary }}>{progressPct}%</div>
         </div>
+        <input
+          type="password"
+          placeholder="Gemini API Key"
+          value={geminiApiKey}
+          onChange={(e) => setGeminiApiKey(e.target.value)}
+          style={{ ...inputStyle, maxWidth: 420 }}
+          aria-label="Gemini API key"
+          autoComplete="off"
+        />
         {weakCount > 0 && (
           <button
             onClick={jumpToWeakTopic}

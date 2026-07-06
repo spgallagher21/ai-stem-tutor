@@ -1,6 +1,5 @@
-// Vercel serverless function. The client never sees the Gemini API key.
-// It POSTs { contents, generationConfig } here, and this function attaches
-// the key server-side before calling Google.
+// Vercel serverless function. Users bring their own Gemini API key.
+// The key is forwarded only for this request and is not stored by the app.
 
 const MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
@@ -15,14 +14,17 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const { contents, generationConfig, apiKey: requestApiKey } = req.body || {};
+  const apiKey = typeof requestApiKey === "string" && requestApiKey.trim()
+    ? requestApiKey.trim()
+    : process.env.GEMINI_API_KEY;
+
   if (!apiKey) {
-    return res.status(500).json({
-      error: "Server misconfigured: GEMINI_API_KEY is not set in the Vercel project environment variables.",
+    return res.status(400).json({
+      error: "Enter your Gemini API key before using the tutor.",
     });
   }
 
-  const { contents, generationConfig } = req.body || {};
   if (!contents) {
     return res.status(400).json({ error: "Missing 'contents' in request body." });
   }
