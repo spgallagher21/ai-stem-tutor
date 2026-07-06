@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 
 // --- Configuration ---
-const API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent";
+// v1beta is the most compatible endpoint for gemini-1.5-flash
+const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
 const THEME = {
   bg: "#0f172a",         
@@ -24,15 +25,15 @@ function robustParseJSON(rawStr) {
     const jsonMatch = rawStr.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try { return JSON.parse(jsonMatch[0]); } 
-      catch (e2) { throw new Error("AI JSON Error"); }
+      catch (e2) { throw new Error("AI data error. Please try again."); }
     }
-    throw new Error("Invalid AI Response Structure");
+    throw new Error("Invalid AI Response. Please try again.");
   }
 }
 
 async function extractTextFromPDF(file) {
   const arrayBuffer = await file.arrayBuffer();
-  // Using window. prefix to pass build checks
+  // window. ensures Vercel doesn't fail the build
   const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let text = "";
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -43,12 +44,11 @@ async function extractTextFromPDF(file) {
   return text;
 }
 
-// --- Independent UI Components ---
+// --- UI Components ---
 
 const MathRenderer = ({ text }) => {
   const containerRef = useRef();
   useEffect(() => {
-    // Using window. prefix to pass build checks
     if (window.renderMathInElement && containerRef.current) {
       window.renderMathInElement(containerRef.current, {
         delimiters: [
@@ -67,13 +67,12 @@ const MermaidRenderer = ({ chart }) => {
   const id = useMemo(() => `mer-` + Math.random().toString(36).substr(2, 9), []);
   useEffect(() => {
     const renderChart = async () => {
-      // Using window. prefix to pass build checks
       if (window.mermaid && chart) {
         try {
           window.mermaid.initialize({ theme: 'dark', startOnLoad: false });
           const { svg: renderedSvg } = await window.mermaid.render(id, chart);
           setSvg(renderedSvg);
-        } catch (e) { console.error(e); }
+        } catch (e) { console.error("Visual error:", e); }
       }
     };
     renderChart();
@@ -135,18 +134,31 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  const callAI = async (messages, tutorInstruction) => {
-    const promptPrefix = `ACT AS A STEM TUTOR. RULES: 1. Use LaTeX ($). 2. Use Mermaid. 3. Physical analogies. 4. ${tutorInstruction}\n\nUSER: `;
-    const contents = messages.map((m, i) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: i === 0 ? promptPrefix + m.content : m.content }]
-    }));
+  const callAI = async (messages, tutorRules) => {
+    // INJECTION STRATEGY: Combine rules with the user message to bypass API field errors
+    const combinedPrompt = `TUTOR RULES: 
+    1. Act as a STEM expert. 
+    2. Use LaTeX math ($). 
+    3. Use Mermaid visuals. 
+    4. Use analogies, no jargon. 
+    5. ${tutorRules}
+    
+    USER REQUEST: ${messages[messages.length - 1].content}`;
+
+    const payload = {
+      contents: [{
+        role: "user",
+        parts: [{ text: combinedPrompt }]
+      }],
+      generationConfig: { temperature: 0.2 }
+    };
 
     const res = await fetch(`${API_URL}?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents, generationConfig: { temperature: 0.2 } })
+      body: JSON.stringify(payload)
     });
+
     const d = await res.json();
     if (d.error) throw new Error(d.error.message);
     return d.candidates[0].content.parts[0].text;
@@ -158,19 +170,19 @@ export default function App() {
     let combined = "";
     for (let file of Array.from(e.target.files)) {
       const text = await extractTextFromPDF(file);
-      combined += `\n[FILE: ${file.name}]\n${text}\n`;
+      combined += `\n[SOURCE: ${file.name}]\n${text}\n`;
     }
     type === "Notes" ? setNotesContent(combined) : setExamContent(combined);
     setLoading(false);
   };
 
   const buildCurriculum = async () => {
-    setLoading(true); setLoadingMsg("Building Path...");
+    setLoading(true); setLoadingMsg("Generating Learning Path...");
     try {
       const res = await callAI([{ role: "user", content: `Subject: ${subject}. Notes: ${notesContent.substring(0, 10000)}. Return JSON ONLY: {"topics": [{"name": "Topic", "subtopics": [{"name": "Subtopic", "difficulty": 3, "estimatedMinutes": 20}]}]}` }], "Return JSON.");
       setCurriculum(robustParseJSON(res));
       setScreen("curriculum");
-    } catch (e) { alert(e.message); }
+    } catch (e) { alert("API Error: " + e.message); }
     setLoading(false);
   };
 
@@ -178,7 +190,7 @@ export default function App() {
     setLoading(true); setLoadingMsg("Loading Lesson...");
     const st = curriculum.topics[tIdx].subtopics[sIdx];
     try {
-      const res = await callAI([{ role: "user", content: `Explain "${st.name}" using: ${notesContent.substring(0, 5000)}` }], "Use LaTeX and Mermaid.");
+      const res = await callAI([{ role: "user", content: `Explain "${st.name}" using context: ${notesContent.substring(0, 5000)}` }], "Use LaTeX and Mermaid.");
       const diagMatch = res.match(/```mermaid([\s\S]*?)```/);
       setSessionData({
         notes: res.replace(/```mermaid[\s\S]*?```/g, "").replace(/```[\s\S]*?```/g, ""),
@@ -195,7 +207,7 @@ export default function App() {
     const st = curriculum.topics[activePath.tIdx].subtopics[activePath.sIdx];
     const style = examContent ? `Mimic style: ${examContent.substring(0, 4000)}` : "";
     try {
-      const res = await callAI([{ role: "user", content: `${style}\nGenerate ${isExam ? "exam" : "check"} question for ${st.name}. JSON: {"question":"...","modelAnswer":"...","hint":"..."}` }], "Return JSON.");
+      const res = await callAI([{ role: "user", content: `${style}\nGenerate question for ${st.name}. JSON: {"question":"...","modelAnswer":"...","hint":"..."}` }], "Return JSON.");
       setSessionData(prev => ({ ...prev, question: robustParseJSON(res) }));
       setStudentAnswer(""); setFeedback(null); setPhase("question");
     } catch (e) { alert(e.message); }
@@ -211,12 +223,12 @@ export default function App() {
       <div style={{ maxWidth: 500, margin: '0 auto', ...cardStyle }}>
         <h2 style={{ marginBottom: '10px' }}>STEM Tutor AI</h2>
         <input type="password" placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} style={inputStyle} />
-        <input placeholder="Subject" value={subject} onChange={e => setSubject(e.target.value)} style={inputStyle} />
-        <label style={{ fontSize: '12px', color: THEME.textMuted }}>Upload Notes (PDF)</label>
+        <input placeholder="Subject Title" value={subject} onChange={e => setSubject(e.target.value)} style={inputStyle} />
+        <label style={{ fontSize: '12px', color: THEME.textMuted }}>Lecture Notes (PDF)</label>
         <input type="file" multiple accept=".pdf" onChange={(e) => handlePdfUpload(e, "Notes")} style={{ ...inputStyle, padding: '10px' }} />
-        <label style={{ fontSize: '12px', color: THEME.textMuted }}>Upload Past Papers (PDF)</label>
+        <label style={{ fontSize: '12px', color: THEME.textMuted }}>Past Papers (PDF)</label>
         <input type="file" multiple accept=".pdf" onChange={(e) => handlePdfUpload(e, "Exams")} style={{ ...inputStyle, padding: '10px' }} />
-        <button onClick={buildCurriculum} disabled={loading || !subject} style={btnStyle}>Create Course</button>
+        <button onClick={buildCurriculum} disabled={loading || !subject} style={btnStyle}>Start Learning</button>
       </div>
     </div>
   );
@@ -240,7 +252,7 @@ export default function App() {
             </div>
           </div>
         ))}
-        <button onClick={() => { localStorage.clear(); window.location.reload(); }} style={{ background: 'none', border: 'none', color: THEME.danger, cursor: 'pointer', marginTop: '20px' }}>Reset</button>
+        <button onClick={() => { localStorage.clear(); window.location.reload(); }} style={{ color: THEME.danger, background: 'none', border: 'none', cursor: 'pointer', marginTop: '20px' }}>Reset Progress</button>
       </div>
     </div>
   );
@@ -255,7 +267,7 @@ export default function App() {
               <h2 style={{ color: THEME.primary }}>{curriculum.topics[activePath.tIdx].subtopics[activePath.sIdx].name}</h2>
               {sessionData.diagram && <MermaidRenderer chart={sessionData.diagram} />}
               <MathRenderer text={sessionData.notes} />
-              <button style={{ ...btnStyle, marginTop: '30px' }} onClick={() => handleFetchQuestion(false)}>Test Understanding</button>
+              <button style={{ ...btnStyle, marginTop: '30px' }} onClick={() => handleFetchQuestion(false)}>Go to Practice</button>
             </div>
           ) : (
             <div>
@@ -264,8 +276,11 @@ export default function App() {
               {!feedback ? (
                 <button style={btnStyle} onClick={async () => {
                   setLoading(true);
-                  const res = await callAI([{ role: "user", content: `Q: ${sessionData.question.question}\nA: ${studentAnswer}\nCorrect: ${sessionData.question.modelAnswer}` }], "Grade strictly. JSON: {\"correct\":boolean, \"feedback\":\"...\"}");
-                  setFeedback(robustParseJSON(res));
+                  try {
+                    const p = `Q: ${sessionData.question.question}\nA: ${studentAnswer}\nCorrect: ${sessionData.question.modelAnswer}`;
+                    const res = await callAI([{ role: "user", content: p }], "Grade strictly. JSON: {\"correct\":boolean, \"feedback\":\"...\"}");
+                    setFeedback(robustParseJSON(res));
+                  } catch(e) { alert(e.message); }
                   setLoading(false);
                 }}>Submit</button>
               ) : (
