@@ -1,18 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 
 // --- Configuration ---
-const API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent";
+// Switched to v1beta to support the 'system_instruction' field properly
+const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 const LEVELS = ["1st Year Undergrad", "Advanced Undergrad", "Masters", "PhD Candidate"];
 
 const THEME = {
-  bg: "#0f172a",         // Deep Slate
-  card: "#1e293b",       // Slate 800
-  border: "#334155",     // Slate 700
-  text: "#f8fafc",       // Slate 50
-  textMuted: "#94a3b8",  // Slate 400
-  primary: "#818cf8",    // Indigo 400
-  success: "#10b981",    // Emerald 500
-  danger: "#ef4444"      // Red 500
+  bg: "#0f172a",         
+  card: "#1e293b",       
+  border: "#334155",     
+  text: "#f8fafc",       
+  textMuted: "#94a3b8",  
+  primary: "#818cf8",    
+  success: "#10b981",    
+  danger: "#ef4444"      
 };
 
 // --- Helper: PDF Text Extraction ---
@@ -23,13 +24,13 @@ async function extractTextFromPDF(file) {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    // Joining items with space to preserve potential mathematical symbol spacing
+    // Mathematical text extraction: preserve spacing for symbols
     text += content.items.map(s => s.str).join(" ") + " \n ";
   }
   return text;
 }
 
-// --- Components (Outside to prevent Focus Bug) ---
+// --- Independent UI Components (Outside to prevent re-render focus issues) ---
 
 const MathRenderer = ({ text }) => {
   const containerRef = useRef();
@@ -54,10 +55,10 @@ const MermaidRenderer = ({ chart }) => {
     const render = async () => {
       if (window.mermaid && chart) {
         try {
-          window.mermaid.initialize({ theme: 'dark' });
+          window.mermaid.initialize({ theme: 'dark', startOnLoad: false });
           const { svg: renderedSvg } = await window.mermaid.render(id, chart);
           setSvg(renderedSvg);
-        } catch (e) { console.error(e); }
+        } catch (e) { console.error("Mermaid Render Error:", e); }
       }
     };
     render();
@@ -113,7 +114,7 @@ export default function App() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: "You are a world-class STEM Tutor. MATH RULE: Interpret messy extracted text into clean LaTeX. Always use $..$ for inline and $$..$$ for blocks. VISUAL RULE: Use Mermaid diagrams. ANALOGY RULE: Use physical world examples. " + sys }] },
+        system_instruction: { parts: [{ text: "You are a world-class STEM Tutor. RULES: 1. Convert messy PDF text into clean LaTeX math ($..$ and $$..$$). 2. Use Mermaid flowcharts. 3. Use real-world physical analogies. 4. Avoid jargon. " + sys }] },
         contents: messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
         generationConfig: { temperature: 0.15 }
       })
@@ -125,11 +126,13 @@ export default function App() {
 
   const handlePdfUpload = async (e, type) => {
     setLoading(true);
-    setLoadingMsg(`Extracting text and formulas from ${type}...`);
+    setLoadingMsg(`Processing ${type} PDFs...`);
     let combined = "";
     for (let file of e.target.files) {
-      const text = await extractTextFromPDF(file);
-      combined += `\n[FILE: ${file.name}]\n${text}\n`;
+      try {
+        const text = await extractTextFromPDF(file);
+        combined += `\n[SOURCE FILE: ${file.name}]\n${text}\n`;
+      } catch (err) { console.error(err); }
     }
     if (type === "Notes") setNotesContent(combined);
     else setExamContent(combined);
@@ -138,162 +141,12 @@ export default function App() {
 
   const buildCurriculum = async () => {
     if (!apiKey || !subject) return;
-    setLoading(true); setLoadingMsg("Designing weighted learning path...");
+    setLoading(true); setLoadingMsg("Designing your curriculum path...");
     try {
       localStorage.setItem("stem-api-key", apiKey);
-      const prompt = `Subject: ${subject}. Level: ${level}. Context from Student Notes: ${notesContent.substring(0, 12000)}. 
-      Return JSON only: {"topics": [{"name": "Topic", "subtopics": [{"name": "Subtopic", "difficulty": 3, "estimatedMinutes": 20, "outcomes": ["..."]}]}]}`;
+      const prompt = `Subject: ${subject}. Level: ${level}. Student Notes provided: ${notesContent.substring(0, 10000)}. 
+      Return JSON only: {"topics": [{"name": "Topic Name", "subtopics": [{"name": "Subtopic Name", "difficulty": 3, "estimatedMinutes": 20, "outcomes": ["..."]}]}]}`;
       const res = await callAI([{ role: "user", content: prompt }], "Output JSON only.");
-      const json = JSON.parse(res.match(/\{[\s\S]*\}/)[0]);
-      setCurriculum(json);
-      setScreen("curriculum");
-    } catch (e) { alert("Error building course: " + e.message); }
-    setLoading(false);
-  };
-
-  // UI Styles
-  const inputStyle = { width: '100%', padding: '14px', borderRadius: '12px', border: `1px solid ${THEME.border}`, background: '#0f172a', color: THEME.text, marginBottom: '20px', fontSize: '15px' };
-  const cardStyle = { background: THEME.card, border: `1px solid ${THEME.border}`, padding: '25px', borderRadius: '20px' };
-  const btnStyle = { width: '100%', padding: '14px', borderRadius: '12px', background: THEME.primary, color: '#fff', border: 'none', fontWeight: 'bold', cursor: 'pointer', fontSize: '16px' };
-
-  if (screen === "setup") return (
-    <div style={{ minHeight: '100vh', background: THEME.bg, color: THEME.text, padding: '40px 20px' }}>
-      <div style={{ maxWidth: 500, margin: '0 auto', ...cardStyle }}>
-        <h2 style={{ fontSize: '28px', marginBottom: '8px' }}>STEM Tutor AI</h2>
-        <p style={{ color: THEME.textMuted, fontSize: '14px', marginBottom: '30px' }}>Your personalized dark-mode study partner.</p>
-        
-        <div style={{ background: '#1e1b4b', padding: '15px', borderRadius: '12px', marginBottom: '25px', border: '1px solid #312e81' }}>
-          <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: THEME.primary }}>🔑 How to get your API Key:</h4>
-          <ol style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: THEME.textMuted, lineHeight: '1.6' }}>
-            <li>Go to <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" style={{ color: THEME.primary }}>Google AI Studio</a>.</li>
-            <li>Sign in and click <strong>"Get API Key"</strong> on the sidebar.</li>
-            <li>Click <strong>"Create API key in new project"</strong>.</li>
-            <li>Copy the key and paste it below. (It's free!)</li>
-          </ol>
-        </div>
-
-        <input type="password" placeholder="Paste Gemini API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} style={inputStyle} />
-        <input placeholder="Subject (e.g. Applied Mathematics)" value={subject} onChange={e => setSubject(e.target.value)} style={inputStyle} />
-        
-        <label style={{ fontSize: '13px', fontWeight: '600', marginBottom: '8px', display: 'block' }}>Course Notes (PDFs)</label>
-        <input type="file" multiple accept=".pdf" onChange={(e) => handlePdfUpload(e, "Notes")} style={{ ...inputStyle, padding: '10px' }} />
-
-        <label style={{ fontSize: '13px', fontWeight: '600', marginBottom: '8px', display: 'block' }}>Past Exam Papers (PDFs)</label>
-        <input type="file" multiple accept=".pdf" onChange={(e) => handlePdfUpload(e, "Exams")} style={{ ...inputStyle, padding: '10px' }} />
-
-        <button onClick={buildCurriculum} disabled={loading || !subject} style={btnStyle}>
-          {loading ? "Processing..." : "Generate Dark-Mode Course"}
-        </button>
-      </div>
-    </div>
-  );
-
-  if (screen === "curriculum") return (
-    <div style={{ minHeight: '100vh', background: THEME.bg, color: THEME.text, padding: '60px 20px' }}>
-      <div style={{ maxWidth: 900, margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px' }}>
-          <h1>{subject}</h1>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '32px', fontWeight: 'bold', color: THEME.primary }}>{Math.round((masteredKeys.size / curriculum.topics.reduce((a,t)=>a+t.subtopics.length,0)) * 100)}%</div>
-            <div style={{ fontSize: '12px', color: THEME.textMuted }}>MASTERY</div>
-          </div>
-        </div>
-
-        {curriculum.topics.map((topic, tIdx) => (
-          <div key={tIdx} style={{ marginBottom: '40px' }}>
-            <h3 style={{ fontSize: '14px', textTransform: 'uppercase', color: THEME.textMuted, marginBottom: '20px', letterSpacing: '1px' }}>{topic.name}</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px' }}>
-              {topic.subtopics.map((st, sIdx) => (
-                <div key={sIdx} onClick={async () => {
-                  setLoading(true);
-                  const prompt = `Topic: ${st.name} from ${subject}. Level: ${level}. 
-                  Study Notes context: ${notesContent.substring(0, 6000)}. 
-                  Explain concisely using physical analogies. Use LaTeX and include a Mermaid diagram.`;
-                  const res = await callAI([{ role: 'user', content: prompt }], "Use LaTeX and Mermaid.");
-                  const diag = res.match(/```mermaid([\s\S]*?)```/);
-                  setSessionData({ notes: res.replace(/```mermaid[\s\S]*?```/g, "").replace(/```[\s\S]*?```/g, ""), diagram: diag ? diag[1] : null });
-                  setActivePath({ tIdx, sIdx }); setPhase("notes"); setScreen("learn");
-                  setLoading(false);
-                }} style={{ 
-                  ...cardStyle, padding: '20px', cursor: 'pointer', 
-                  borderColor: masteredKeys.has(`${tIdx}-${sIdx}`) ? THEME.success : THEME.border 
-                }}>
-                  <div style={{ fontWeight: 'bold', fontSize: '16px' }}>{st.name}</div>
-                  <div style={{ fontSize: '12px', color: THEME.textMuted, marginTop: '5px' }}>{st.estimatedMinutes} mins • Difficulty {st.difficulty}</div>
-                  {masteredKeys.has(`${tIdx}-${sIdx}`) && <div style={{ color: THEME.success, fontSize: '11px', fontWeight: 'bold', marginTop: '10px' }}>✓ MASTERED</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-      {loading && <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.9)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-        <div style={{ width: '40px', height: '40px', border: `3px solid ${THEME.border}`, borderTopColor: THEME.primary, borderRadius: '50%', animation: 'spin 1s linear infinite', marginBottom: '20px' }} />
-        <div style={{ fontWeight: 'bold' }}>{loadingMsg}</div>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>}
-    </div>
-  );
-
-  if (screen === "learn") return (
-    <div style={{ minHeight: '100vh', background: THEME.bg, color: THEME.text, padding: '40px 20px' }}>
-      <div style={{ maxWidth: 800, margin: '0 auto' }}>
-        <button onClick={() => setScreen("curriculum")} style={{ background: 'none', border: 'none', color: THEME.textMuted, cursor: 'pointer', marginBottom: '20px', fontSize: '16px' }}>← Back to Path</button>
-        <div style={cardStyle}>
-          {phase === "notes" ? (
-            <div>
-              <h2 style={{ marginBottom: '25px', color: THEME.primary }}>{curriculum.topics[activePath.tIdx].subtopics[activePath.sIdx].name}</h2>
-              {sessionData.diagram && <MermaidRenderer chart={sessionData.diagram} />}
-              <MathRenderer text={sessionData.notes} />
-              <button style={{ ...btnStyle, marginTop: '40px' }} onClick={async () => {
-                setLoading(true);
-                const style = examContent ? `MIMIC THIS EXAM STYLE: ${examContent.substring(0, 4000)}` : "";
-                const prompt = `${style}\nGenerate a practice question for ${curriculum.topics[activePath.tIdx].subtopics[activePath.sIdx].name}. Return JSON only: {"question":"...","modelAnswer":"...","hint":"..."}`;
-                const res = await callAI([{ role: 'user', content: prompt }], "Return JSON only.");
-                setSessionData(prev => ({ ...prev, question: JSON.parse(res.match(/\{[\s\S]*\}/)[0]) }));
-                setPhase("question"); setLoading(false);
-              }}>Start Practice Quiz</button>
-            </div>
-          ) : (
-            <div>
-              <div style={{ color: THEME.primary, fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', marginBottom: '10px' }}>Practice Question</div>
-              <h3 style={{ marginBottom: '30px' }}><MathRenderer text={sessionData.question.question} /></h3>
-              <p style={{ color: THEME.textMuted, fontSize: '13px', fontStyle: 'italic', marginBottom: '10px' }}>Hint: {sessionData.question.hint}</p>
-              <textarea value={studentAnswer} onChange={e => setStudentAnswer(e.target.value)} placeholder="Type your answer using physical analogies if possible..." style={{ ...inputStyle, height: '150px', resize: 'vertical' }} />
-              {!feedback ? (
-                <button style={btnStyle} onClick={async () => {
-                  setLoading(true);
-                  const p = `Q: ${sessionData.question.question}\nStudent Answer: ${studentAnswer}\nModel Answer: ${sessionData.question.modelAnswer}`;
-                  const res = await callAI([{ role: "user", content: p }], "Grade strictly. Return JSON: {\"correct\":boolean, \"feedback\":\"...\"}");
-                  setFeedback(JSON.parse(res.match(/\{[\s\S]*\}/)[0]));
-                  setLoading(false);
-                }}>Submit Answer</button>
-              ) : (
-                <div style={{ marginTop: '30px', padding: '25px', borderRadius: '15px', background: feedback.correct ? '#064e3b' : '#450a0a', border: `1px solid ${feedback.correct ? THEME.success : THEME.danger}` }}>
-                  <div style={{ fontWeight: 'bold', fontSize: '18px', color: feedback.correct ? '#10b981' : '#f87171', marginBottom: '10px' }}>{feedback.correct ? "✓ Correct!" : "✗ Review Suggested"}</div>
-                  <p style={{ fontSize: '15px', lineHeight: '1.6' }}>{feedback.feedback}</p>
-                  <div style={{ marginTop: '20px', padding: '15px', background: 'rgba(0,0,0,0.3)', borderRadius: '10px' }}>
-                    <div style={{ fontSize: '11px', color: THEME.textMuted, marginBottom: '5px' }}>MODEL ANSWER REFERENCE:</div>
-                    <MathRenderer text={sessionData.question.modelAnswer} />
-                  </div>
-                  <button style={{ ...btnStyle, marginTop: '20px', background: '#fff', color: '#000' }} onClick={() => {
-                    if (feedback.correct) {
-                      setMasteredKeys(new Set(masteredKeys).add(`${activePath.tIdx}-${activePath.sIdx}`));
-                      setScreen("curriculum");
-                    } else {
-                      setFeedback(null);
-                      setPhase("notes"); // Send them back to re-read
-                    }
-                  }}>{feedback.correct ? "Complete & Continue" : "Back to Notes"}</button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      {loading && <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>{loadingMsg}</div>}
-    </div>
-  );
-
-  return null;
-}
+      const jsonStr = res.match(/\{[\s\S]*\}/)[0];
+      setCurriculum(JSON.parse(jsonStr));
+      setScreen
