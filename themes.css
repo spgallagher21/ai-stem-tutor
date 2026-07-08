@@ -1,0 +1,286 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap");
+
+:root,
+[data-theme="aurora"] {
+  --bg: #0b1120;
+  --surface: #151e33;
+  --surface-2: #101827;
+  --border: #26324a;
+  --text: #f1f5f9;
+  --text-muted: #a6b0ca;
+  --accent-1: #22d3ee;
+  --accent-2: #818cf8;
+  --accent-3: #a78bfa;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #f87171;
+  --shadow: rgba(0, 0, 0, 0.28);
+  --signature: linear-gradient(90deg, var(--accent-1), var(--accent-2), var(--accent-3), var(--accent-1));
+}
+
+[data-theme="sunset"] {
+  --bg: #fff6f3;
+  --surface: #ffffff;
+  --surface-2: #fff0eb;
+  --border: #ffdcd1;
+  --text: #3a2a2e;
+  --text-muted: #87676d;
+  --accent-1: #ff7a59;
+  --accent-2: #ff6f91;
+  --accent-3: #8ecae6;
+  --success: #25866a;
+  --warning: #b96d12;
+  --danger: #c2414b;
+  --shadow: rgba(122, 65, 48, 0.12);
+  --signature: radial-gradient(circle at 50% 115%, transparent 0 54%, var(--accent-1) 55%, var(--accent-2) 67%, var(--accent-3) 79%, transparent 80%);
+}
+
+[data-theme="refraction"] {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f4f4f6;
+  --border: #e8e8ec;
+  --text: #1a1a1e;
+  --text-muted: #66666f;
+  --accent-1: #ff6b6b;
+  --accent-2: #06d6a0;
+  --accent-3: #4cc9f0;
+  --success: #0f766e;
+  --warning: #b45309;
+  --danger: #be123c;
+  --shadow: rgba(30, 30, 40, 0.08);
+  --signature: linear-gradient(90deg, #ff6b6b, #ffd166, #06d6a0, #4cc9f0, #a78bfa);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid var(--accent-1);
+  outline-offset: 2px;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-1) 10%, transparent), transparent 34%),
+    var(--bg);
+  color: var(--text);
+  padding: 32px 20px 56px;
+}
+
+.container {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+}
+
+.narrow {
+  width: min(640px, 100%);
+}
+
+.heading {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: 0;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 16px 40px var(--shadow);
+}
+
+.card::before,
+.signature-line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: var(--signature);
+  background-size: 240% 100%;
+  border-radius: 8px 8px 0 0;
+}
+
+[data-theme="aurora"] .card::before,
+[data-theme="aurora"] .signature-line::before {
+  animation: auroraSweep 8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="aurora"] .card::before,
+  [data-theme="aurora"] .signature-line::before {
+    animation: none;
+  }
+}
+
+@keyframes auroraSweep {
+  from { background-position: 0% 50%; }
+  to { background-position: 240% 50%; }
+}
+
+.btn {
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--accent-2);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 12px 16px;
+}
+
+.btn.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 12px;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.subject-grid {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.progress-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--signature);
+}
+
+.toast-wrap {
+  position: fixed;
+  right: 20px;
+  top: 20px;
+  z-index: 2000;
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 40px));
+}
+
+.toast {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent-1);
+  background: var(--surface);
+  color: var(--text);
+  padding: 12px 14px;
+  box-shadow: 0 12px 30px var(--shadow);
+}
+
+.toast.error {
+  border-left-color: var(--danger);
+}
+
+.note-paper {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 36px clamp(18px, 5vw, 54px);
+  border-radius: 8px;
+  background-color: #fdfbf7;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 .04'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  color: #1a1a1a;
+  border: 1px solid #e5dfd3;
+  box-shadow: 0 18px 45px rgba(42, 32, 20, 0.12);
+}
+
+.note-paper h1,
+.note-paper h2,
+.note-paper h3 {
+  color: #000;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.note-section {
+  border-top: 1px solid #1a1a1a;
+  margin-top: 28px;
+  padding-top: 18px;
+}
+
+.equation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid #e5dfd3;
+}
+
+.equation-number {
+  font-family: "IBM Plex Mono", monospace;
+  color: #6b6459;
+  white-space: nowrap;
+}
+
+.worked-box {
+  background: #f7f2e9;
+  border: 1px solid #e5dfd3;
+  border-radius: 8px;
+  padding: 18px;
+  margin-top: 24px;
+}
+
+.paper-muted {
+  color: #6b6459;
+}

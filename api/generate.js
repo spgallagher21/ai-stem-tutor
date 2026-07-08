@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { contents, generationConfig, apiKey: requestApiKey } = req.body || {};
+  const { contents, generationConfig, apiKey: requestApiKey, documentPart, tools } = req.body || {};
   const apiKey = typeof requestApiKey === "string" && requestApiKey.trim()
     ? requestApiKey.trim()
     : process.env.GEMINI_API_KEY;
@@ -29,10 +29,22 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing 'contents' in request body." });
   }
 
+  const payloadContents = documentPart && Array.isArray(contents) && contents[0]?.parts
+    ? [
+        {
+          ...contents[0],
+          parts: [...contents[0].parts, documentPart],
+        },
+        ...contents.slice(1),
+      ]
+    : contents;
+
   const payload = {
-    contents,
+    contents: payloadContents,
     generationConfig: generationConfig || {},
   };
+
+  if (tools) payload.tools = tools;
 
   const maxAttempts = 3;
   let lastErrMessage = "Gemini request failed.";
