@@ -13,9 +13,9 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { getBytes, ref as storageRef, uploadBytes } from "firebase/storage";
 import { AuthProvider, getSettings, saveSettings, useAuth } from "./AuthContext";
-import { db, firebaseReady, storage } from "./firebase";
+import { db, firebaseReady } from "./firebase";
+import { getLocalPdf, saveLocalPdf } from "./localPdfStore";
 import {
   MAX_INLINE_DOCUMENT_BYTES,
   arrayBufferToBase64,
@@ -214,10 +214,6 @@ function assignIds(curriculum) {
       subtopics: (topic.subtopics || []).map((st) => ({ ...st, id: st.id || crypto.randomUUID() })),
     })),
   };
-}
-
-function storageKey(uid, name) {
-  return `users/${uid}/subjects/${crypto.randomUUID()}/${name}`;
 }
 
 function lessonKey(subjectId, subtopicId) {
@@ -545,6 +541,7 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
       <div className="container narrow card" style={{ padding: 28 }}>
         <button className="btn ghost" onClick={onBack}>Back</button>
         <h1 className="heading">Add Subject</h1>
+        <p className="muted">PDFs are stored on this device. Your subject, lessons, questions, and progress can sync through Firestore, but source PDFs must be re-uploaded on a different device before regenerating content there.</p>
         <label className="muted" style={{ fontSize: 13 }}>Subject title</label>
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 18px" }} />
         <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDFs</label>
@@ -824,36 +821,43 @@ function StemTutor() {
     }
   };
 
-  const uploadSourceFiles = async (subjectId, files, folder) => {
+  const storeSourceFiles = async (subjectId, files, folder) => {
     const records = [];
     for (const file of files) {
-      const path = hasFirebase && storage ? `users/${uid}/subjects/${subjectId}/${folder}/${file.name}` : storageKey(uid, file.name);
-      sessionPdfBytes.current.set(path, file.bytes);
-      if (hasFirebase && storage) {
-        await uploadBytes(storageRef(storage, path), file.bytes, { contentType: file.type });
-      }
-      records.push({ name: file.name, path, pageIndex: file.pageIndex, mimeType: file.type });
+      const localPdfId = `${uid}:${subjectId}:${folder}:${crypto.randomUUID()}`;
+      sessionPdfBytes.current.set(localPdfId, file.bytes);
+      await saveLocalPdf({
+        id: localPdfId,
+        name: file.name,
+        mimeType: file.type,
+        bytes: file.bytes,
+        pageIndex: file.pageIndex,
+        savedAt: Date.now(),
+      });
+      records.push({ name: file.name, localPdfId, pageCount: file.pageIndex?.length || 0, mimeType: file.type, storage: "indexeddb" });
     }
     return records;
   };
 
-  const getBytesForSource = async (source) => {
-    const cached = sessionPdfBytes.current.get(source.path);
-    if (cached) return cached;
-    if (!hasFirebase || !storage) throw new Error("Re-upload the PDF to regenerate this content in local mode.");
-    const bytes = await getBytes(storageRef(storage, source.path));
-    sessionPdfBytes.current.set(source.path, bytes);
-    return bytes;
+  const getLocalSource = async (source) => {
+    const localPdfId = source.localPdfId || source.path;
+    const cached = sessionPdfBytes.current.get(localPdfId);
+    if (!localPdfId) throw new Error("Re-upload the source PDF to regenerate this content on this device.");
+    const stored = await getLocalPdf(localPdfId);
+    if (!cached && !stored?.bytes) throw new Error("This PDF is not stored on this device. Re-upload it to regenerate source-grounded notes or questions.");
+    const bytes = cached || stored.bytes;
+    sessionPdfBytes.current.set(localPdfId, bytes);
+    return { bytes, pageIndex: stored?.pageIndex || source.pageIndex || [] };
   };
 
   const getDocumentPart = async (subject, { queryText, scoped = true, sourceKind = "notes" } = {}) => {
     const files = sourceKind === "exam" ? subject.meta?.examFiles || [] : subject.meta?.sourceFiles || [];
     const source = files[0];
     if (!source) return null;
-    const bytes = await getBytesForSource(source);
+    const { bytes, pageIndex } = await getLocalSource(source);
     let payloadBytes = bytes;
-    if (scoped && source.pageIndex?.length) {
-      const pages = scoreRelevantPages(source.pageIndex, queryText, 10);
+    if (scoped && pageIndex.length) {
+      const pages = scoreRelevantPages(pageIndex, queryText, 10);
       payloadBytes = await extractPages(bytes, pages);
     }
     if (payloadBytes.byteLength <= MAX_INLINE_DOCUMENT_BYTES) return inlinePdfDocumentPart(payloadBytes);
@@ -875,9 +879,9 @@ function StemTutor() {
 
   const buildCurriculum = async ({ name, notesFiles, examFiles }) => {
     setLoading(true);
-    setLoadingMsg("Uploading PDFs and mapping the syllabus...");
+    setLoadingMsg("Saving PDFs on this device and mapping the syllabus...");
     try {
-      const tempSubject = { meta: { sourceFiles: notesFiles.map((file, i) => ({ ...file, path: `session-notes-${i}` })) } };
+      const tempSubject = { meta: { sourceFiles: notesFiles.map((file, i) => ({ ...file, localPdfId: `session-notes-${i}` })) } };
       notesFiles.forEach((file, i) => sessionPdfBytes.current.set(`session-notes-${i}`, file.bytes));
       const documentPart = await getDocumentPart(tempSubject, { scoped: false });
       const prompt = `You are designing a college-level curriculum for "${name}" based on the attached lecture notes PDF. Break the material into topics and subtopics that mirror how the notes are actually structured. Do not invent topics that are not covered. Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
@@ -891,8 +895,8 @@ function StemTutor() {
       if (!curriculum.topics?.length) throw new Error("The AI returned an empty curriculum. Try more complete lecture notes.");
 
       const subjectId = hasFirebase && db ? doc(collection(db, "users", uid, "subjects")).id : crypto.randomUUID();
-      const sourceFiles = await uploadSourceFiles(subjectId, notesFiles, "notes");
-      const storedExamFiles = await uploadSourceFiles(subjectId, examFiles, "exam");
+      const sourceFiles = await storeSourceFiles(subjectId, notesFiles, "notes");
+      const storedExamFiles = await storeSourceFiles(subjectId, examFiles, "exam");
       const subjectDoc = {
         id: subjectId,
         meta: { name, moduleId: null, curriculum, examPlan: null, sourceFiles, examFiles: storedExamFiles, createdAt: hasFirebase ? serverTimestamp() : Date.now() },
@@ -1238,7 +1242,7 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
       ) : null}
       {!hasFirebase && settings.onboarded && (
         <div style={{ position: "fixed", left: 16, bottom: 16, maxWidth: 360 }} className="toast">
-          Firebase env vars are missing, so this build is using local browser storage until they are configured.
+          Firebase env vars are missing, so subjects and progress are local-only. PDFs are always stored on this device.
         </div>
       )}
     </>
