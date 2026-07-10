@@ -1,3 +1,4 @@
+npm install react-markdown remark-math remark-gfm rehype-katex katex
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
