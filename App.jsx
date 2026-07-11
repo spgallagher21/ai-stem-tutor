@@ -416,11 +416,21 @@ const MermaidRenderer = ({ chart, paper = false }) => {
             ? { background: "#fdfbf7", primaryColor: "#dbeafe", primaryTextColor: "#1a1a1a", lineColor: "#6b6459", tertiaryColor: "#f7f2e9" }
             : { background: "transparent", primaryColor: "#151e33", primaryTextColor: "#f1f5f9", lineColor: "#818cf8" },
         });
-        const { svg: renderedSvg } = await window.mermaid.render(id, chart);
-        if (!cancelled) setSvg(renderedSvg);
-      } catch (e) {
-        if (!cancelled) setError(true);
-      }
+        const renderChart = async () => {
+  if (!chart) return;
+  try {
+    await waitForGlobal("mermaid");
+    window.mermaid.initialize({ /* ...your existing config... */ });
+
+    // Validate syntax first — parse() throws on bad syntax, render() often doesn't
+    await window.mermaid.parse(chart);
+
+    const { svg: renderedSvg } = await window.mermaid.render(id, chart);
+    if (!cancelled) setSvg(renderedSvg);
+  } catch (e) {
+    if (!cancelled) setError(true);
+  }
+};
     };
     renderChart();
     return () => {
