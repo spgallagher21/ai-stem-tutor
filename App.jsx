@@ -403,39 +403,31 @@ const MermaidRenderer = ({ chart, paper = false }) => {
   const [svg, setSvg] = useState("");
   const [error, setError] = useState(false);
   const id = useMemo(() => `mer-${crypto.randomUUID().replaceAll("-", "")}`, []);
-  useEffect(() => {
-    let cancelled = false;
-    const renderChart = async () => {
-      if (!chart) return;
-      try {
-        await waitForGlobal("mermaid");
-        window.mermaid.initialize({
-          startOnLoad: false,
-          theme: "base",
-          themeVariables: paper
-            ? { background: "#fdfbf7", primaryColor: "#dbeafe", primaryTextColor: "#1a1a1a", lineColor: "#6b6459", tertiaryColor: "#f7f2e9" }
-            : { background: "transparent", primaryColor: "#151e33", primaryTextColor: "#f1f5f9", lineColor: "#818cf8" },
-        });
-        const renderChart = async () => {
-  if (!chart) return;
-  try {
-    await waitForGlobal("mermaid");
-    window.mermaid.initialize({ /* ...your existing config... */ });
-
-    // Validate syntax first — parse() throws on bad syntax, render() often doesn't
-    await window.mermaid.parse(chart);
-
-    const { svg: renderedSvg } = await window.mermaid.render(id, chart);
-    if (!cancelled) setSvg(renderedSvg);
-  } catch (e) {
-    if (!cancelled) setError(true);
-  }
-};
-    renderChart();
-    return () => {
-      cancelled = true;
-    };
-  }, [chart, id, paper]);
+useEffect(() => {
+  let cancelled = false;
+  const renderChart = async () => {
+    if (!chart) return;
+    try {
+      await waitForGlobal("mermaid");
+      window.mermaid.initialize({
+        startOnLoad: false,
+        theme: "base",
+        themeVariables: paper
+          ? { background: "#fdfbf7", primaryColor: "#dbeafe", primaryTextColor: "#1a1a1a", lineColor: "#6b6459", tertiaryColor: "#f7f2e9" }
+          : { background: "transparent", primaryColor: "#151e33", primaryTextColor: "#f1f5f9", lineColor: "#818cf8" },
+      });
+      await window.mermaid.parse(chart);
+      const { svg: renderedSvg } = await window.mermaid.render(id, chart);
+      if (!cancelled) setSvg(renderedSvg);
+    } catch (e) {
+      if (!cancelled) setError(true);
+    }
+  };
+  renderChart();
+  return () => {
+    cancelled = true;
+  };
+}, [chart, id, paper]);
 
   if (error || !chart) return null;
   return <div style={{ margin: "22px 0", overflowX: "auto" }} dangerouslySetInnerHTML={{ __html: svg }} />;
