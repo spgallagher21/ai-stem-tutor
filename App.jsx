@@ -431,7 +431,6 @@ const MermaidRenderer = ({ chart, paper = false }) => {
     if (!cancelled) setError(true);
   }
 };
-    };
     renderChart();
     return () => {
       cancelled = true;
