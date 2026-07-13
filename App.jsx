@@ -1877,15 +1877,20 @@ Before returning, silently self-check every equation, claim, and worked-example 
       }
       const plan = await ensureExamPlan(selectedSubject);
       const chosenType = pickWeighted(plan.question_types, "weight_percent");
+      const followUpType = chosenType.type === "multiple_choice"
+        ? { type: "short_answer", avg_marks: 5, style_notes: "Concise written answer that checks understanding beyond recognition." }
+        : chosenType;
       const documentPart = await getDocumentPart(selectedSubject, { queryText: `${active.topic.name} ${active.subtopic.name}`, scoped: true });
       const adaptiveDifficulty = computeAdaptiveDifficulty(active.subtopic.difficulty, bank);
-      const prompt = `Write ${QUESTION_BATCH_SIZE} DISTINCT exam-style practice questions on the class "${active.subtopic.name}" inside the topic "${active.topic.name}" for a college exam in the module "${selectedSubject.meta.name}", each testing a different angle of this class so they don't feel repetitive.
+      const prompt = `Write ${QUESTION_BATCH_SIZE} DISTINCT practice questions on the class "${active.subtopic.name}" inside the topic "${active.topic.name}" for a college exam in the module "${selectedSubject.meta.name}", each testing a different angle of this class so they don't feel repetitive.
 
-Question type: ${chosenType.type}. Style guidance from the real past papers: ${chosenType.style_notes || plan.overall_notes || "standard exam phrasing"}.
+Question 1 must be multiple_choice. Make it a useful starter question that checks a core definition, assumption, equation meaning, concept distinction, or common misconception from the notes. Include exactly 4 plausible options and put the exact correct option text in correct_option.
+
+Question 2 type: ${followUpType.type}. Style guidance from the real past papers: ${followUpType.style_notes || plan.overall_notes || "standard exam phrasing"}.
 Difficulty: ${adaptiveDifficulty}/5.
-Marks: around ${chosenType.avg_marks || 5}.
+Marks: around ${followUpType.avg_marks || 5}.
 
-If multiple_choice, include exactly 4 plausible options per question and put the exact correct option text in correct_option. Otherwise leave options empty and correct_option empty. Refer to the attached lecture notes document for source material. Return the questions under a "questions" array.`;
+For non-multiple-choice questions, leave options empty and correct_option empty. Refer to the attached lecture notes document for source material. Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in the requested order.`;
       const parsed = safeParseJSON(await callGemini({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
