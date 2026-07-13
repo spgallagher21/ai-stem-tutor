@@ -35,11 +35,15 @@ const GENERATE_ENDPOINT = "/api/generate";
 const UPLOAD_FILE_ENDPOINT = "/api/upload-file";
 const MAX_ATTEMPTS_STORED = 20;
 const QUESTION_BATCH_SIZE = 3;
+const APP_NAME = "StudyForge";
 
 const THEME_CHOICES = [
-  { id: "aurora", name: "Midnight Aurora" },
-  { id: "sunset", name: "Pink Sunset" },
-  { id: "refraction", name: "Daybreak" },
+  { id: "aurora-dark", name: "Aurora Dark" },
+  { id: "aurora-light", name: "Aurora Light" },
+  { id: "sunset-dark", name: "Sunset Dark" },
+  { id: "sunset-light", name: "Sunset Light" },
+  { id: "verdant-dark", name: "Verdant Dark" },
+  { id: "verdant-light", name: "Verdant Light" },
 ];
 
 const REFERRAL_CHOICES = [
@@ -48,6 +52,13 @@ const REFERRAL_CHOICES = [
   { id: "search", label: "Online search" },
   { id: "other", label: "Other" },
 ];
+
+function normalizeThemeId(theme) {
+  if (theme === "aurora") return "aurora-dark";
+  if (theme === "refraction") return "aurora-light";
+  if (theme === "sunset") return "sunset-dark";
+  return theme || "aurora-dark";
+}
 
 const QUESTION_TYPE_LABELS = {
   multiple_choice: "Multiple choice",
@@ -537,12 +548,12 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
   const steps = editMode ? ONBOARDING_STEPS_EDIT : ONBOARDING_STEPS_FULL;
   const [stepIndex, setStepIndex] = useState(0);
   const [apiKey, setApiKey] = useState(settings.geminiApiKey || "");
-  const [theme, setTheme] = useState(settings.theme || "aurora");
+  const [theme, setTheme] = useState(normalizeThemeId(settings.theme));
   const [studyContext, setStudyContext] = useState(settings.studyContext || "");
   const [referralSource, setReferralSource] = useState(settings.referralSource || "");
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = normalizeThemeId(theme);
   }, [theme]);
 
   const step = steps[stepIndex];
@@ -591,9 +602,9 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
 
         {step === "welcome" && (
           <>
-            <h1 className="heading" style={{ marginTop: 0 }}>STEM Tutor AI</h1>
-            <p className="muted">Create a module, upload its lecture PDFs, and let STEM Tutor organise them into topics, bite-sized classes, and lessons.</p>
-            <p className="muted">Connecting your own free Gemini key keeps the app free to use, while STEM Tutor adds the prompting, review passes, and practice logic that make the output feel closer to a paid tutoring tool.</p>
+            <h1 className="heading" style={{ marginTop: 0 }}>{APP_NAME}</h1>
+            <p className="muted">Create a module, upload its lecture PDFs, and let {APP_NAME} organise them into topics, bite-sized classes, and lessons.</p>
+            <p className="muted">Connecting your own free Gemini key keeps the app free to use, while {APP_NAME} adds the prompting, review passes, and practice logic that make the output feel closer to a paid tutoring tool.</p>
             <p className="muted">Your notes, modules, and progress stay under your account and are not shared with other users.</p>
           </>
         )}
@@ -602,7 +613,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
           <>
             <h1 className="heading" style={{ marginTop: 0 }}>{editMode ? "Update your API key" : "Your Gemini API key"}</h1>
             <p className="muted">
-              This is what keeps STEM Tutor free for you: your own Gemini quota powers the AI, and the app layers specialist tutoring prompts and checks on top.
+              This is what keeps {APP_NAME} free for you: your own Gemini quota powers the AI, and the app layers specialist tutoring prompts and checks on top.
             </p>
             <p className="muted" style={{ fontSize: 13 }}>
               Get a free key at{" "}
@@ -687,7 +698,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
   const [studyContext, setStudyContext] = useState(settings.studyContext || "");
 
   const applyTheme = async (theme) => {
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = normalizeThemeId(theme);
     await onSave({ theme });
   };
 
@@ -710,7 +721,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
             <h2 className="heading" style={{ marginTop: 0 }}>Appearance</h2>
             <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
               {THEME_CHOICES.map((choice) => (
-                <ThemePreviewCard key={choice.id} theme={choice} selected={settings.theme === choice.id} onSelect={() => applyTheme(choice.id)} />
+                <ThemePreviewCard key={choice.id} theme={choice} selected={normalizeThemeId(settings.theme) === choice.id} onSelect={() => applyTheme(choice.id)} />
               ))}
             </div>
           </section>
@@ -747,7 +758,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
               <button className="btn secondary" onClick={onReplayTutorial}>Replay tutorial</button>
               <button className="btn ghost" onClick={() => showToast("Support contact coming before public launch.", "info")}>Contact support</button>
             </div>
-            <p className="muted mono" style={{ fontSize: 12, marginTop: 16 }}>AI STEM Tutor launch candidate</p>
+            <p className="muted mono" style={{ fontSize: 12, marginTop: 16 }}>{APP_NAME} launch candidate</p>
           </section>
         </div>
       </div>
@@ -757,8 +768,10 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
 
 const TUTORIAL_STEPS = [
   { target: "addModule", title: "Create a module", body: "A module is the top-level folder for one course or unit, like Applied Dynamics II." },
-  { target: "fileUpload", title: "Upload source PDFs", body: "Lecture notes stay on this device, while the generated curriculum and progress can sync through your account." },
-  { target: "buildCurriculum", title: "Generate topics", body: "The AI groups your notes into the fewest useful topics and class-sized subtopics it can." },
+  { target: "moduleName", title: "Name the module", body: "Use the real course/module name. Good names help the AI separate broad topics like Vibrations, 3D Kinematics, or Lagrangian Mechanics." },
+  { target: "fileUpload", title: "Upload notes topic by topic", body: "For faster processing and fewer API limit issues, start with one topic's lecture notes PDF. You can add more note PDFs to this module at any time." },
+  { target: "examUpload", title: "Past papers are optional", body: "If you have past papers, add them now or later. They help practice questions match your exam style, but they are not required to generate topics." },
+  { target: "buildCurriculum", title: "Generate topics", body: "Processing may take a moment. The AI groups your notes into the fewest useful topics and class-sized subtopics it can." },
   { target: "subjectCard", title: "Open a module", body: "Module cards show progress and remaining study time. Open one to see its generated topics." },
   { target: "subtopicCard", title: "Start a class", body: "Each class is a bite-sized lesson inside a topic. Dim cards have not generated notes yet." },
   { target: "done", title: "You're set up", body: "Use Settings to replay this walkthrough, update your API key, or change themes at any time." },
@@ -891,8 +904,8 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewW
           <p className="muted">Upload more lecture notes or past papers here. The module will preserve existing topics where possible, add new topics when the notes warrant it, and keep classes bite-sized.</p>
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
             <div>
-              <label className="muted" style={{ fontSize: 13 }}>More lecture notes</label>
-              <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ marginTop: 8 }} />
+              <label className="muted" style={{ fontSize: 13 }}>More lecture notes, one topic at a time</label>
+              <input className="input" type="file" accept=".pdf" onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ marginTop: 8 }} />
               {notesFiles.length > 0 && <p className="muted">{notesFiles.map((f) => f.name).join(", ")}</p>}
             </div>
             <div>
@@ -901,6 +914,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewW
               {examFiles.length > 0 && <p className="muted">{examFiles.map((f) => f.name).join(", ")}</p>}
             </div>
           </div>
+          <p className="muted" style={{ fontSize: 13 }}>This can take a moment because the AI is reading the PDF and updating your module map.</p>
           <button
             className="btn secondary"
             disabled={!canUpdate || loading}
@@ -973,16 +987,18 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
       <div className="container narrow card" style={{ padding: 28 }}>
         <button className="btn ghost" onClick={onBack}>Back</button>
         <h1 className="heading">Create Module</h1>
-        <p className="muted">A module is the folder for one course or unit. Upload lecture notes and past papers at this level; STEM Tutor will organise them into topics, subtopics/classes, and lessons.</p>
+        <p className="muted">A module is the folder for one course or unit. Upload one topic's lecture notes to start; you can add more note PDFs and past papers to the module at any time.</p>
+        <p className="muted">For quicker processing and fewer API limit issues, upload notes topic by topic rather than selecting a whole semester of PDFs at once.</p>
         <p className="muted">PDFs are stored on this device. Your module, lessons, questions, and progress can sync through Firestore, but source PDFs must be re-uploaded on a different device before regenerating content there.</p>
         <label className="muted" style={{ fontSize: 13 }}>Module title</label>
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 18px" }} />
-        <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDFs</label>
-        <input className="input" data-tour="fileUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
+        <input className="input" data-tour="moduleName" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 18px" }} />
+        <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDF for one topic</label>
+        <input className="input" data-tour="fileUpload" type="file" accept=".pdf" onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
         {notesFiles.length > 0 && <p className="muted">{notesFiles.map((f) => f.name).join(", ")}</p>}
         <label className="muted" style={{ fontSize: 13 }}>Past papers PDFs</label>
-        <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setExamFiles, "Past papers")} style={{ margin: "8px 0 10px" }} />
+        <input className="input" data-tour="examUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setExamFiles, "Past papers")} style={{ margin: "8px 0 10px" }} />
         {examFiles.length > 0 && <p className="muted">{examFiles.map((f) => f.name).join(", ")}</p>}
+        <p className="muted" style={{ fontSize: 13 }}>Generating topics can take a moment while the AI reads your PDF.</p>
         <button className="btn" data-tour="buildCurriculum" disabled={loading || !name.trim() || notesFiles.length === 0} onClick={() => onCreate({ name, notesFiles, examFiles })} style={{ width: "100%", marginTop: 16 }}>
           {loading ? loadingMsg || "Working..." : "Generate Topics"}
         </button>
@@ -1186,7 +1202,7 @@ function LearnView({
 function StemTutor() {
   const { uid, authLoading, firebaseReady: hasFirebase } = useAuth();
   const { toasts, showToast, removeToast } = useToasts();
-  const [settings, setSettings] = useState({ onboarded: false, geminiApiKey: "", theme: "aurora", studyContext: "", referralSource: "", tutorialSeen: false });
+  const [settings, setSettings] = useState({ onboarded: false, geminiApiKey: "", theme: "aurora-dark", studyContext: "", referralSource: "", tutorialSeen: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(null);
@@ -1235,9 +1251,10 @@ function StemTutor() {
   useEffect(() => {
     if (!uid) return;
     getSettings(uid).then((saved) => {
-      const next = saved || { onboarded: false, geminiApiKey: sessionStorage.getItem("stem-gemini-api-key") || "", theme: "aurora", studyContext: "", referralSource: "", tutorialSeen: false };
-      setSettings({ studyContext: "", referralSource: "", tutorialSeen: false, ...next });
-      document.documentElement.dataset.theme = next.theme || "aurora";
+      const next = saved || { onboarded: false, geminiApiKey: sessionStorage.getItem("stem-gemini-api-key") || "", theme: "aurora-dark", studyContext: "", referralSource: "", tutorialSeen: false };
+      const normalized = { studyContext: "", referralSource: "", tutorialSeen: false, ...next, theme: normalizeThemeId(next.theme) };
+      setSettings(normalized);
+      document.documentElement.dataset.theme = normalized.theme;
       setSettingsLoaded(true);
     });
   }, [uid]);
@@ -1250,7 +1267,7 @@ function StemTutor() {
   }, [uid, settingsLoaded]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = settings.theme || "aurora";
+    document.documentElement.dataset.theme = normalizeThemeId(settings.theme);
   }, [settings.theme]);
 
   useEffect(() => {
@@ -1368,7 +1385,7 @@ function StemTutor() {
   const advanceTutorial = () => {
     const next = tutorialStep + 1;
     const target = TUTORIAL_STEPS[next]?.target;
-    if (target === "fileUpload" || target === "buildCurriculum") setScreen("add");
+    if (target === "moduleName" || target === "fileUpload" || target === "examUpload" || target === "buildCurriculum") setScreen("add");
     if (target === "subjectCard") setScreen("dashboard");
     if (target === "subtopicCard") {
       if (subjects[0]) {
@@ -1389,7 +1406,7 @@ function StemTutor() {
   const goBackTutorial = () => {
     const prev = Math.max(0, tutorialStep - 1);
     const target = TUTORIAL_STEPS[prev]?.target;
-    if (target === "fileUpload" || target === "buildCurriculum") setScreen("add");
+    if (target === "moduleName" || target === "fileUpload" || target === "examUpload" || target === "buildCurriculum") setScreen("add");
     if (target === "addModule" || target === "subjectCard") setScreen("dashboard");
     setTutorialStep(prev);
   };
@@ -1498,27 +1515,7 @@ Rules:
         documentPart,
         generationConfig: { temperature: 0.2, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
       }, { onStatus: setLoadingMsg });
-      let curriculum = assignIds(safeParseJSON(res));
-      for (let i = 1; i < notesFiles.length; i += 1) {
-        setLoadingMsg(`Folding in ${notesFiles[i].name}...`);
-        const extraSubject = { meta: { sourceFiles: [{ ...notesFiles[i], localPdfId: `session-notes-${i}` }] } };
-        const extraDocumentPart = await getDocumentPart(extraSubject, { scoped: false });
-        const extraPrompt = `Update the existing module organisation for "${name}" using this additional lecture notes PDF.
-
-Existing module map:
-${JSON.stringify(curriculum)}
-
-Return the full updated module map with the hierarchy Module -> topics -> subtopics/classes -> lessons generated later.
-
-Preserve existing broad topics when the new notes fit them. Add a new topic only when the notes clearly introduce a distinct overarching area. Add or adjust subtopics/classes inside an existing topic when that is enough. Minimise the number of subtopics and avoid duplicate near-synonyms.`;
-        const extraRes = await callGemini({
-          apiKey: settings.geminiApiKey,
-          contents: [{ role: "user", parts: [{ text: extraPrompt }] }],
-          documentPart: extraDocumentPart,
-          generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
-        }, { onStatus: setLoadingMsg });
-        curriculum = preserveCurriculumIds(curriculum, safeParseJSON(extraRes));
-      }
+      const curriculum = assignIds(safeParseJSON(res));
       if (!curriculum.topics?.length) throw new Error("The AI returned an empty curriculum. Try more complete lecture notes.");
 
       const subjectId = hasFirebase && db ? doc(collection(db, "users", uid, "subjects")).id : crypto.randomUUID();
@@ -1556,11 +1553,11 @@ Preserve existing broad topics when the new notes fit them. Add a new topic only
       let curriculum = subject.meta?.curriculum || { topics: [] };
 
       if (newSourceFiles.length) {
-        for (const sourceFile of newSourceFiles) {
-          setLoadingMsg(`Folding in ${sourceFile.name}...`);
-          const tempSubject = { meta: { sourceFiles: [sourceFile] } };
-          const documentPart = await getDocumentPart(tempSubject, { scoped: false });
-          const prompt = `Update the existing module organisation for "${subject.meta.name}" using the newly attached lecture notes.
+        const sourceFile = newSourceFiles[0];
+        setLoadingMsg(`Folding in ${sourceFile.name}...`);
+        const tempSubject = { meta: { sourceFiles: [sourceFile] } };
+        const documentPart = await getDocumentPart(tempSubject, { scoped: false });
+        const prompt = `Update the existing module organisation for "${subject.meta.name}" using the newly attached lecture notes.
 
 Existing module map:
 ${JSON.stringify(curriculum)}
@@ -1576,14 +1573,13 @@ Rules:
 - Do not duplicate existing subtopics under slightly different names.
 - Do not invent content that is not supported by either the existing map or the attached notes.
 - Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
-          const res = await callGemini({
-            apiKey: settings.geminiApiKey,
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            documentPart,
-            generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
-          }, { onStatus: setLoadingMsg });
-          curriculum = preserveCurriculumIds(curriculum, safeParseJSON(res));
-        }
+        const res = await callGemini({
+          apiKey: settings.geminiApiKey,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          documentPart,
+          generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
+        }, { onStatus: setLoadingMsg });
+        curriculum = preserveCurriculumIds(curriculum, safeParseJSON(res));
       }
 
       const nextMeta = {
