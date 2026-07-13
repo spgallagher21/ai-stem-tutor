@@ -28,6 +28,7 @@ import {
   extractPages,
   inlinePdfDocumentPart,
   scoreRelevantPages,
+  termsFor,
   waitForGlobal,
 } from "./pdfUtils";
 
@@ -95,16 +96,51 @@ const CURRICULUM_SCHEMA = {
                 name: { type: "STRING" },
                 difficulty: { type: "NUMBER" },
                 estimatedMinutes: { type: "NUMBER" },
+                sourceFileNames: { type: "ARRAY", items: { type: "STRING" } },
+                sourcePageHints: { type: "ARRAY", items: { type: "NUMBER" } },
               },
               required: ["name", "difficulty", "estimatedMinutes"],
             },
           },
+          summary: { type: "STRING" },
         },
         required: ["name", "subtopics"],
       },
     },
   },
   required: ["topics"],
+};
+
+const SOURCE_INDEX_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    documentTitle: { type: "STRING" },
+    summary: { type: "STRING" },
+    broadTopics: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          name: { type: "STRING" },
+          summary: { type: "STRING" },
+          pageHints: { type: "ARRAY", items: { type: "NUMBER" } },
+          likelySubtopics: { type: "ARRAY", items: { type: "STRING" } },
+          keywords: { type: "ARRAY", items: { type: "STRING" } },
+        },
+        required: ["name", "summary"],
+      },
+    },
+  },
+  required: ["documentTitle", "summary", "broadTopics"],
+};
+
+const MODULE_INDEX_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    sourceIndex: SOURCE_INDEX_SCHEMA,
+    curriculum: CURRICULUM_SCHEMA,
+  },
+  required: ["sourceIndex", "curriculum"],
 };
 
 const LESSON_SCHEMA_V2 = {
@@ -307,6 +343,75 @@ function appendAttempt(question, attempt) {
     ...question,
     attempts: [attempt, ...(question.attempts || [])].slice(0, MAX_ATTEMPTS_STORED),
   };
+}
+
+function truncateText(text, maxChars) {
+  const clean = (text || "").replace(/\s+/g, " ").trim();
+  return clean.length > maxChars ? `${clean.slice(0, maxChars)}...` : clean;
+}
+
+function pickDigestPages(pageIndex = [], maxPages = 28) {
+  if (pageIndex.length <= maxPages) return pageIndex;
+  const selected = new Map();
+  pageIndex.slice(0, 4).forEach((page) => selected.set(page.pageNum, page));
+  pageIndex.slice(-2).forEach((page) => selected.set(page.pageNum, page));
+  const remaining = maxPages - selected.size;
+  for (let i = 0; i < remaining; i += 1) {
+    const idx = Math.round((i / Math.max(remaining - 1, 1)) * (pageIndex.length - 1));
+    selected.set(pageIndex[idx].pageNum, pageIndex[idx]);
+  }
+  return [...selected.values()].sort((a, b) => a.pageNum - b.pageNum);
+}
+
+function buildDocumentDigest(file, { maxPages = 28, charsPerPage = 900 } = {}) {
+  const pages = pickDigestPages(file.pageIndex || [], maxPages);
+  const pageDigest = pages
+    .map((page) => `Page ${page.pageNum}: ${truncateText(page.text, charsPerPage)}`)
+    .join("\n\n");
+  return `File: ${file.name}
+Pages in PDF: ${file.pageIndex?.length || "unknown"}
+Sampled pages: ${pages.map((page) => page.pageNum).join(", ") || "none"}
+
+${pageDigest || "No selectable text was extracted from this PDF."}`;
+}
+
+function scorePageIndex(pageIndex = [], queryText = "") {
+  const terms = termsFor(queryText);
+  if (!terms.length) return 0;
+  return pageIndex.reduce((total, page) => {
+    const lower = (page.text || "").toLowerCase();
+    return total + terms.reduce((sum, term) => sum + lower.split(term).length - 1, 0);
+  }, 0);
+}
+
+function compactSourceIndexes(sourceIndexes = []) {
+  return sourceIndexes.map((entry) => ({
+    fileName: entry.fileName,
+    documentTitle: entry.index?.documentTitle,
+    summary: entry.index?.summary,
+    broadTopics: (entry.index?.broadTopics || []).map((topic) => ({
+      name: topic.name,
+      summary: topic.summary,
+      pageHints: topic.pageHints || [],
+      likelySubtopics: topic.likelySubtopics || [],
+      keywords: topic.keywords || [],
+    })),
+  }));
+}
+
+function findRelevantSourceContext(subject, topic, subtopic) {
+  const query = normalizeName(`${topic?.name || ""} ${subtopic?.name || ""}`);
+  const matches = (subject.meta?.sourceIndexes || [])
+    .map((entry) => {
+      const topicHits = (entry.index?.broadTopics || []).filter((item) => {
+        const haystack = normalizeName(`${item.name} ${item.summary} ${(item.likelySubtopics || []).join(" ")} ${(item.keywords || []).join(" ")}`);
+        return query.split(" ").some((term) => term.length > 2 && haystack.includes(term));
+      });
+      return topicHits.length ? { fileName: entry.fileName, topics: topicHits } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  return matches.length ? JSON.stringify(matches) : "No saved source-index match found; rely on the scoped PDF pages.";
 }
 
 // --- 3.3 Adaptive question difficulty based on real performance ---
@@ -914,7 +1019,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewW
               {examFiles.length > 0 && <p className="muted">{examFiles.map((f) => f.name).join(", ")}</p>}
             </div>
           </div>
-          <p className="muted" style={{ fontSize: 13 }}>This can take a moment because the AI is reading the PDF and updating your module map.</p>
+          <p className="muted" style={{ fontSize: 13 }}>This can take a moment while the AI indexes the new notes and updates your saved module map.</p>
           <button
             className="btn secondary"
             disabled={!canUpdate || loading}
@@ -998,7 +1103,7 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
         <label className="muted" style={{ fontSize: 13 }}>Past papers PDFs</label>
         <input className="input" data-tour="examUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setExamFiles, "Past papers")} style={{ margin: "8px 0 10px" }} />
         {examFiles.length > 0 && <p className="muted">{examFiles.map((f) => f.name).join(", ")}</p>}
-        <p className="muted" style={{ fontSize: 13 }}>Generating topics can take a moment while the AI reads your PDF.</p>
+        <p className="muted" style={{ fontSize: 13 }}>Generating topics can take a moment while the AI indexes your notes and saves the module map.</p>
         <button className="btn" data-tour="buildCurriculum" disabled={loading || !name.trim() || notesFiles.length === 0} onClick={() => onCreate({ name, notesFiles, examFiles })} style={{ width: "100%", marginTop: 16 }}>
           {loading ? loadingMsg || "Working..." : "Generate Topics"}
         </button>
@@ -1452,6 +1557,66 @@ function StemTutor() {
     return records;
   };
 
+  const createModuleIndexFromFile = async ({ moduleName, file, existingCurriculum = null, existingSourceIndexes = [] }) => {
+    const digest = buildDocumentDigest(file);
+    const hasExistingMap = existingCurriculum?.topics?.length;
+    const prompt = hasExistingMap
+      ? `You are updating the saved organisation for the college module "${moduleName}".
+
+The app is intentionally giving you a compact text digest of the newly uploaded PDF, not the full PDF. Use this digest to create a reusable source index for this PDF and merge it into the existing module map.
+
+Existing module map:
+${JSON.stringify(existingCurriculum)}
+
+Saved source indexes already in the module:
+${JSON.stringify(compactSourceIndexes(existingSourceIndexes))}
+
+New PDF digest:
+${digest}
+
+Return:
+1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, useful keywords, and page hints.
+2. curriculum: the full updated module map.
+
+Rules:
+- Preserve existing broad topics when the new notes fit them.
+- Add a new topic only when the digest clearly introduces a distinct overarching area.
+- Add or adjust subtopics/classes inside an existing topic when that is enough.
+- Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
+- Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
+- Do not duplicate existing subtopics under slightly different names.
+- Do not invent content not supported by the existing map, saved indexes, or new digest.`
+      : `You are organising the college module "${moduleName}".
+
+The app is intentionally giving you a compact text digest of the uploaded lecture PDF, not the full PDF. Use this digest to create a reusable source index and an efficient module map.
+
+PDF digest:
+${digest}
+
+Return:
+1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, useful keywords, and page hints.
+2. curriculum: a compact module map with this hierarchy only: Module -> topics -> subtopics/classes -> lessons generated later.
+
+Rules:
+- Topics must be broad lecture-note sections or recurring blocks the digest clearly supports.
+- Subtopics are class-sized lesson units inside each topic.
+- Minimise the number of subtopics. Prefer fewer, well-scoped classes over lots of tiny fragments.
+- Do not create a subtopic for every heading, equation, or slide. Combine adjacent material when one lesson can teach it coherently.
+- Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
+- Do not invent topics that are not covered by the digest.
+- Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
+
+    const result = safeParseJSON(await callGemini({
+      apiKey: settings.geminiApiKey,
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: hasExistingMap ? 0.15 : 0.2, responseMimeType: "application/json", responseSchema: MODULE_INDEX_SCHEMA },
+    }, { onStatus: setLoadingMsg }));
+    return {
+      sourceIndex: result.sourceIndex,
+      curriculum: hasExistingMap ? preserveCurriculumIds(existingCurriculum, result.curriculum) : assignIds(result.curriculum),
+    };
+  };
+
   const getLocalSource = async (source) => {
     const localPdfId = source.localPdfId || source.path;
     const cached = sessionPdfBytes.current.get(localPdfId);
@@ -1465,7 +1630,17 @@ function StemTutor() {
 
   const getDocumentPart = async (subject, { queryText, scoped = true, sourceKind = "notes" } = {}) => {
     const files = sourceKind === "exam" ? subject.meta?.examFiles || [] : subject.meta?.sourceFiles || [];
-    const source = files[0];
+    let source = files[0];
+    if (sourceKind === "notes" && scoped && files.length > 1) {
+      let best = { source: files[0], score: -1 };
+      for (const candidate of files) {
+        const localPdfId = candidate.localPdfId || candidate.path;
+        const stored = localPdfId ? await getLocalPdf(localPdfId) : null;
+        const score = scorePageIndex(stored?.pageIndex || candidate.pageIndex || [], queryText);
+        if (score > best.score) best = { source: candidate, score };
+      }
+      source = best.source;
+    }
     if (!source) return null;
     const { bytes, pageIndex } = await getLocalSource(source);
     let payloadBytes = bytes;
@@ -1492,38 +1667,19 @@ function StemTutor() {
 
   const buildCurriculum = async ({ name, notesFiles, examFiles }) => {
     setLoading(true);
-    setLoadingMsg("Saving PDFs on this device and organising the module...");
+    setLoadingMsg("Indexing the PDF and organising the module...");
     try {
-      const tempSubject = { meta: { sourceFiles: notesFiles.map((file, i) => ({ ...file, localPdfId: `session-notes-${i}` })) } };
-      notesFiles.forEach((file, i) => sessionPdfBytes.current.set(`session-notes-${i}`, file.bytes));
-      const documentPart = await getDocumentPart(tempSubject, { scoped: false });
-      const prompt = `You are organising the college module "${name}" from the attached lecture notes PDF.
-
-Return a compact module map with this hierarchy only:
-Module -> topics -> subtopics/classes -> lessons generated later.
-
-Rules:
-- Topics must be broad lecture-note sections or recurring blocks the slides clearly support, such as "Vibrations" or "3D Kinematics".
-- Subtopics are class-sized lesson units inside each topic, such as "free undamped vibrations" or "forced vibrations".
-- Minimise the number of subtopics. Prefer fewer, well-scoped classes over lots of tiny fragments.
-- Do not create a subtopic for every heading, equation, or slide. Combine adjacent material when one lesson can teach it coherently.
-- Do not invent topics that are not covered by the attached notes.
-- Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
-      const res = await callGemini({
-        apiKey: settings.geminiApiKey,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        documentPart,
-        generationConfig: { temperature: 0.2, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
-      }, { onStatus: setLoadingMsg });
-      const curriculum = assignIds(safeParseJSON(res));
+      const indexed = await createModuleIndexFromFile({ moduleName: name, file: notesFiles[0] });
+      const curriculum = indexed.curriculum;
       if (!curriculum.topics?.length) throw new Error("The AI returned an empty curriculum. Try more complete lecture notes.");
 
       const subjectId = hasFirebase && db ? doc(collection(db, "users", uid, "subjects")).id : crypto.randomUUID();
       const sourceFiles = await storeSourceFiles(subjectId, notesFiles, "notes");
+      const sourceIndexes = sourceFiles[0] ? [{ fileName: sourceFiles[0].name, localPdfId: sourceFiles[0].localPdfId, index: indexed.sourceIndex }] : [];
       const storedExamFiles = await storeSourceFiles(subjectId, examFiles, "exam");
       const subjectDoc = {
         id: subjectId,
-        meta: { name, moduleId: null, curriculum, examPlan: null, sourceFiles, examFiles: storedExamFiles, createdAt: hasFirebase ? serverTimestamp() : Date.now() },
+        meta: { name, moduleId: null, curriculum, sourceIndexes, examPlan: null, sourceFiles, examFiles: storedExamFiles, createdAt: hasFirebase ? serverTimestamp() : Date.now() },
         masteryLog: {},
       };
       if (hasFirebase && db) {
@@ -1548,43 +1704,33 @@ Rules:
     setLoading(true);
     setLoadingMsg("Updating module organisation...");
     try {
+      let curriculum = subject.meta?.curriculum || { topics: [] };
+      let newSourceIndexEntries = [];
+
+      if (notesFiles.length) {
+        const notesFile = notesFiles[0];
+        setLoadingMsg(`Indexing ${notesFile.name}...`);
+        const indexed = await createModuleIndexFromFile({
+          moduleName: subject.meta.name,
+          file: notesFile,
+          existingCurriculum: curriculum,
+          existingSourceIndexes: subject.meta?.sourceIndexes || [],
+        });
+        curriculum = indexed.curriculum;
+        newSourceIndexEntries = [{ pendingName: notesFile.name, index: indexed.sourceIndex }];
+      }
+
       const newSourceFiles = await storeSourceFiles(subject.id, notesFiles, "notes");
       const newExamFiles = await storeSourceFiles(subject.id, examFiles, "exam");
-      let curriculum = subject.meta?.curriculum || { topics: [] };
-
-      if (newSourceFiles.length) {
-        const sourceFile = newSourceFiles[0];
-        setLoadingMsg(`Folding in ${sourceFile.name}...`);
-        const tempSubject = { meta: { sourceFiles: [sourceFile] } };
-        const documentPart = await getDocumentPart(tempSubject, { scoped: false });
-        const prompt = `Update the existing module organisation for "${subject.meta.name}" using the newly attached lecture notes.
-
-Existing module map:
-${JSON.stringify(curriculum)}
-
-Return the full updated module map with this hierarchy:
-Module -> topics -> subtopics/classes -> lessons generated later.
-
-Rules:
-- Preserve existing broad topics when the new notes fit them.
-- Add a new topic only when the new notes clearly introduce a distinct overarching area.
-- Add or adjust subtopics/classes inside an existing topic when that is enough.
-- Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
-- Do not duplicate existing subtopics under slightly different names.
-- Do not invent content that is not supported by either the existing map or the attached notes.
-- Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
-        const res = await callGemini({
-          apiKey: settings.geminiApiKey,
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          documentPart,
-          generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
-        }, { onStatus: setLoadingMsg });
-        curriculum = preserveCurriculumIds(curriculum, safeParseJSON(res));
-      }
+      newSourceIndexEntries = newSourceIndexEntries.map((entry) => {
+        const fileRecord = newSourceFiles.find((source) => source.name === entry.pendingName);
+        return { fileName: fileRecord?.name || entry.pendingName, localPdfId: fileRecord?.localPdfId || null, index: entry.index };
+      });
 
       const nextMeta = {
         ...subject.meta,
         curriculum,
+        sourceIndexes: [...(subject.meta?.sourceIndexes || []), ...newSourceIndexEntries],
         sourceFiles: [...(subject.meta?.sourceFiles || []), ...newSourceFiles],
         examFiles: [...(subject.meta?.examFiles || []), ...newExamFiles],
         examPlan: newExamFiles.length ? null : subject.meta?.examPlan || null,
@@ -1639,12 +1785,16 @@ Rules:
       }
 
       setLoadingMsg("Drafting your lesson...");
+      const sourceContext = findRelevantSourceContext(subject, topic, subtopic);
       const documentPart = await getDocumentPart(subject, { queryText: `${topic.name} ${subtopic.name}`, scoped: true });
       const draftPrompt = `${TUTOR_VOICE_PROMPT}
 
 ${buildTeachingPhilosophyPrompt(settings.studyContext)}
 
-Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}". Keep the scope bite-sized: teach this class well, but do not expand into neighbouring classes unless needed for context. Refer to the attached lecture notes document for source material. Return only the requested JSON.`;
+Saved source-index context for this class:
+${sourceContext}
+
+Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}". Keep the scope bite-sized: teach this class well, but do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy, and refer to the attached scoped lecture-note pages for source material. Return only the requested JSON.`;
       let draft = safeParseJSON(await callGemini({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: draftPrompt }] }],
@@ -1980,7 +2130,7 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
           <button key={toast.id} className={`toast ${toast.variant}`} onClick={() => removeToast(toast.id)}>{toast.message}</button>
         ))}
       </div>
-      {loading && <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", display: "grid", placeItems: "center", color: "#fff", zIndex: 1500 }}><div className="card" style={{ padding: 24 }}>{loadingMsg}</div></div>}
+      {loading && <div className="loading-overlay"><div className="card loading-message">{loadingMsg}</div></div>}
 
       {!settings.onboarded ? (
         <Onboarding settings={settings} showToast={showToast} onDone={persistSettings} />

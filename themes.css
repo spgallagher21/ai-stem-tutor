@@ -26,7 +26,7 @@
   --surface-2: #eef1f8;
   --border: #e1e5f0;
   --text: #14172a;
-  --text-muted: #5b6178;
+  --text-muted: #42495f;
   --accent-1: #6366f1;
   --accent-2: #22b8cf;
   --accent-3: #a78bfa;
@@ -56,15 +56,15 @@
 }
 
 [data-theme="sunset-light"] {
-  --bg: #fff7f8;
-  --surface: #ffffff;
-  --surface-2: #ffecef;
-  --border: #ffd4de;
-  --text: #351826;
-  --text-muted: #8b536b;
-  --accent-1: #e85288;
-  --accent-2: #f97350;
-  --accent-3: #9f5fbe;
+  --bg: #ffdfe8;
+  --surface: #fff8fb;
+  --surface-2: #ffcfdc;
+  --border: #f4a9bf;
+  --text: #351321;
+  --text-muted: #66334b;
+  --accent-1: #d6336c;
+  --accent-2: #e85d3f;
+  --accent-3: #8f49aa;
   --success: #15803d;
   --warning: #b45309;
   --danger: #be123c;
@@ -95,7 +95,7 @@
   --surface-2: #e8f6ee;
   --border: #cfe8d8;
   --text: #102116;
-  --text-muted: #51705d;
+  --text-muted: #385342;
   --accent-1: #16a34a;
   --accent-2: #0f766e;
   --accent-3: #65a30d;
@@ -247,6 +247,24 @@ select:focus-visible {
 
 .muted {
   color: var(--text-muted);
+}
+
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(8, 10, 18, 0.72);
+}
+
+.loading-message {
+  width: min(420px, 100%);
+  padding: 24px;
+  color: var(--text);
+  font-weight: 700;
+  text-align: center;
 }
 
 .progress-bar {
