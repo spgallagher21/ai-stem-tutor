@@ -117,6 +117,22 @@ const SOURCE_INDEX_SCHEMA = {
   properties: {
     documentTitle: { type: "STRING" },
     summary: { type: "STRING" },
+    visualAssets: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          pageNumber: { type: "NUMBER" },
+          title: { type: "STRING" },
+          caption: { type: "STRING" },
+          visualType: { type: "STRING" },
+          relatedTopics: { type: "ARRAY", items: { type: "STRING" } },
+          relatedKeywords: { type: "ARRAY", items: { type: "STRING" } },
+          whyTextIsInsufficient: { type: "STRING" },
+        },
+        required: ["pageNumber", "title", "caption", "whyTextIsInsufficient"],
+      },
+    },
     broadTopics: {
       type: "ARRAY",
       items: {
@@ -183,18 +199,6 @@ const LESSON_SCHEMA_V2 = {
       },
     },
     diagram_mermaid: { type: "STRING" },
-    visual_refs: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          pageNumber: { type: "NUMBER" },
-          caption: { type: "STRING" },
-          reason: { type: "STRING" },
-        },
-        required: ["pageNumber", "caption"],
-      },
-    },
     common_mistakes: { type: "ARRAY", items: { type: "STRING" } },
     coverage_checklist: { type: "ARRAY", items: { type: "STRING" } },
     summary: { type: "STRING" },
@@ -405,6 +409,15 @@ function compactSourceIndexes(sourceIndexes = []) {
     fileName: entry.fileName,
     documentTitle: entry.index?.documentTitle,
     summary: entry.index?.summary,
+    visualAssets: (entry.index?.visualAssets || []).map((asset) => ({
+      pageNumber: asset.pageNumber,
+      title: asset.title,
+      caption: asset.caption,
+      visualType: asset.visualType,
+      relatedTopics: asset.relatedTopics || [],
+      relatedKeywords: asset.relatedKeywords || [],
+      whyTextIsInsufficient: asset.whyTextIsInsufficient,
+    })),
     broadTopics: (entry.index?.broadTopics || []).map((topic) => ({
       name: topic.name,
       summary: topic.summary,
@@ -431,12 +444,21 @@ function findRelevantSourceContext(subject, topic, subtopic) {
   return matches.length ? JSON.stringify(matches) : "No saved source-index match found; rely on the scoped PDF pages.";
 }
 
-function isSpecificVisualRef(ref) {
-  const text = `${ref?.caption || ""} ${ref?.reason || ""}`.toLowerCase();
-  if (/slide|page|overview|summary|text|bullet/.test(text) && !/complex|diagram|graph|chart|table|image|scan|micrograph|x-?ray|mri|ct|histology|pathway|flow|free-?body|circuit|structure|anatomy/.test(text)) {
-    return false;
-  }
-  return /complex|diagram|graph|chart|table|image|scan|micrograph|x-?ray|mri|ct|histology|pathway|flow|free-?body|circuit|structure|anatomy|spatial|visual/.test(text);
+function findRelevantVisualAssets(subject, topic, subtopic) {
+  const queryTerms = new Set(termsFor(`${topic?.name || ""} ${subtopic?.name || ""}`));
+  const candidates = (subject.meta?.sourceIndexes || []).flatMap((entry) => (
+    (entry.index?.visualAssets || []).map((asset) => ({ ...asset, localPdfId: entry.localPdfId, fileName: entry.fileName }))
+  ));
+  return candidates
+    .map((asset) => {
+      const haystackTerms = termsFor(`${asset.title || ""} ${asset.caption || ""} ${(asset.relatedTopics || []).join(" ")} ${(asset.relatedKeywords || []).join(" ")} ${asset.whyTextIsInsufficient || ""}`);
+      const score = haystackTerms.reduce((sum, term) => sum + (queryTerms.has(term) ? 1 : 0), 0);
+      return { asset, score };
+    })
+    .filter(({ asset, score }) => score > 0 && Number.isFinite(Number(asset.pageNumber)))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 1)
+    .map(({ asset }) => asset);
 }
 
 // --- 3.3 Adaptive question difficulty based on real performance ---
@@ -1205,7 +1227,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
       {lesson.source_visuals?.length > 0 && (
         <div className="note-section">
           <h2>Source Figures</h2>
-          <p className="paper-muted">These figures add visual detail from the lecture notes. The written lesson above should still stand on its own.</p>
+          <p className="paper-muted">These figures were recognised during PDF indexing and only add visual detail that is hard to reproduce in text. The written lesson above should still stand on its own.</p>
           <div style={{ display: "grid", gap: 18 }}>
             {lesson.source_visuals.map((visual, i) => (
               <figure key={`${visual.pageNumber}-${i}`} style={{ margin: 0 }}>
@@ -1649,7 +1671,7 @@ New PDF digest:
 ${digest}
 
 Return:
-1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, useful keywords, and page hints.
+1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, visualAssets, useful keywords, and page hints.
 2. curriculum: the full updated module map.
 
 Rules:
@@ -1658,6 +1680,8 @@ Rules:
 - Add or adjust subtopics/classes inside an existing topic when that is enough.
 - Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
 - For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, named examples, diseases, drugs, organisms, clinical cases, experiments, diagrams, and equations a generated lesson must cover if the notes mention them.
+- Identify visualAssets only for complex images/figures where visual recognition adds something text cannot: anatomy/pathology images, scans, histology/micrographs, dense pathways, multi-axis graphs, detailed tables, circuits, free-body diagrams, spatial layouts, or other genuinely visual material. Ignore ordinary text slides, title slides, simple bullet lists, and diagrams that can be fully described in prose.
+- For each visualAsset include pageNumber, title, caption, visualType, relatedTopics, relatedKeywords, and whyTextIsInsufficient. The caption should describe what is visually present, not replace the later lesson explanation.
 - Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
 - Do not duplicate existing subtopics under slightly different names.
 - Do not invent content not supported by the existing map, saved indexes, or new digest.`
@@ -1669,7 +1693,7 @@ PDF digest:
 ${digest}
 
 Return:
-1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, useful keywords, and page hints.
+1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, visualAssets, useful keywords, and page hints.
 2. curriculum: a compact module map with this hierarchy only: Module -> topics -> subtopics/classes -> lessons generated later.
 
 Rules:
@@ -1678,6 +1702,8 @@ Rules:
 - Minimise the number of subtopics. Prefer fewer, well-scoped classes over lots of tiny fragments.
 - Do not create a subtopic for every heading, equation, or slide. Combine adjacent material when one lesson can teach it coherently.
 - For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, named examples, diseases, drugs, organisms, clinical cases, experiments, diagrams, and equations a generated lesson must cover if the notes mention them.
+- Identify visualAssets only for complex images/figures where visual recognition adds something text cannot: anatomy/pathology images, scans, histology/micrographs, dense pathways, multi-axis graphs, detailed tables, circuits, free-body diagrams, spatial layouts, or other genuinely visual material. Ignore ordinary text slides, title slides, simple bullet lists, and diagrams that can be fully described in prose.
+- For each visualAsset include pageNumber, title, caption, visualType, relatedTopics, relatedKeywords, and whyTextIsInsufficient. The caption should describe what is visually present, not replace the later lesson explanation.
 - Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
 - Do not invent topics that are not covered by the digest.
 - Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
@@ -1749,23 +1775,26 @@ Rules:
     return context?.documentPart || null;
   };
 
-  const buildSourceVisuals = async (lessonDraft, documentContext) => {
-    const refs = (lessonDraft?.visual_refs || [])
-      .filter((ref) => Number.isFinite(Number(ref.pageNumber)))
-      .filter(isSpecificVisualRef)
-      .slice(0, 1);
-    if (!refs.length || !documentContext?.bytes) return [];
-    const allowedPages = documentContext.pages?.length ? new Set(documentContext.pages) : null;
+  const buildSourceVisuals = async (visualAssets, documentContext) => {
+    const refs = (visualAssets || []).slice(0, 1);
+    if (!refs.length) return [];
     const visuals = [];
     for (const ref of refs) {
       const pageNumber = Math.round(Number(ref.pageNumber));
-      if (allowedPages && !allowedPages.has(pageNumber)) continue;
       try {
-        const dataUrl = await renderPdfPageImage(documentContext.bytes, pageNumber);
+        let sourceBytes = documentContext?.source?.localPdfId === ref.localPdfId ? documentContext.bytes : null;
+        if (!sourceBytes && ref.localPdfId) {
+          const stored = await getLocalPdf(ref.localPdfId);
+          sourceBytes = stored?.bytes || null;
+        }
+        if (!sourceBytes) continue;
+        const dataUrl = await renderPdfPageImage(sourceBytes, pageNumber);
         visuals.push({
           pageNumber,
-          caption: ref.caption || `Lecture notes page ${pageNumber}`,
-          reason: ref.reason || "",
+          caption: ref.caption || ref.title || `Lecture notes page ${pageNumber}`,
+          reason: ref.whyTextIsInsufficient || "",
+          visualType: ref.visualType || "",
+          sourceFileName: ref.fileName || "",
           imageDataUrl: dataUrl,
         });
       } catch (err) {
@@ -1882,9 +1911,10 @@ Rules:
       setLoadingMsg("Drafting your lesson...");
       const sourceContext = findRelevantSourceContext(subject, topic, subtopic);
       const documentContext = await getDocumentContext(subject, { queryText: `${topic.name} ${subtopic.name}`, scoped: true });
-      const visualPageContext = documentContext?.pages?.length
-        ? `The attached scoped PDF contains these original lecture-note page numbers: ${documentContext.pages.join(", ")}.`
-        : "No original page numbers are available for source visuals.";
+      const matchedVisualAssets = findRelevantVisualAssets(subject, topic, subtopic);
+      const visualContext = matchedVisualAssets.length
+        ? `Pre-indexed complex source visual available for supplementary display after the lesson:\n${JSON.stringify(matchedVisualAssets.map((asset) => ({ title: asset.title, caption: asset.caption, visualType: asset.visualType, relatedKeywords: asset.relatedKeywords, whyTextIsInsufficient: asset.whyTextIsInsufficient })))}`
+        : "No pre-indexed complex source visual is relevant to this class.";
       const draftPrompt = `${TUTOR_VOICE_PROMPT}
 
 ${buildTeachingPhilosophyPrompt(settings.studyContext)}
@@ -1892,7 +1922,7 @@ ${buildTeachingPhilosophyPrompt(settings.studyContext)}
 Saved source-index context for this class:
 ${sourceContext}
 
-${visualPageContext}
+${visualContext}
 
 Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}".
 
@@ -1904,10 +1934,8 @@ Quality bar:
 - Prefer 5-9 substantial teaching sections when the notes warrant it.
 - Each section should include key_points listing the concrete ideas it covered.
 - Include coverage_checklist listing the major lecture-note items you covered, phrased as student-checkable bullets.
-- Do not use visual_refs for ordinary slides, text-heavy pages, simple bullet lists, or images you can explain clearly in words or recreate as a simple Mermaid diagram. Explain the content in prose first.
-- The written lesson must pass this image removal test: if every visual_ref and source figure were deleted, a student should still understand every examinable concept, example, disease/case, mechanism, equation, and derivation from the relevant notes.
-- Include up to 1 visual_ref, or 2 only when genuinely necessary, for complex source visuals that add information impossible or impractical to convey fully in text, such as dense anatomy/pathology images, medical scans, histology/micrographs, complex pathways, multi-axis graphs, detailed tables, free-body diagrams, circuits, or spatial layouts.
-- Never replace explanation with a visual_ref. The surrounding section must already explain what the figure shows, why it matters, and what the student should learn from it. The caption should only add orientation, not carry the core teaching.
+- Do not choose or request images. The app handles image display separately from pre-indexed visual assets.
+- If pre-indexed visual context is provided, explain the underlying concept fully in text. The written lesson must stand alone even if no source figure is displayed.
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
@@ -1920,7 +1948,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
         generationConfig: { temperature: 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
       }, { onStatus: setLoadingMsg }));
 
-      const source_visuals = await buildSourceVisuals(finalLesson, documentContext);
+      const source_visuals = await buildSourceVisuals(matchedVisualAssets, documentContext);
       const payload = { ...finalLesson, source_visuals, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
       setLesson(payload);
