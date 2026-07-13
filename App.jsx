@@ -27,6 +27,7 @@ import {
   buildPageIndex,
   extractPages,
   inlinePdfDocumentPart,
+  renderPdfPageImage,
   scoreRelevantPages,
   termsFor,
   waitForGlobal,
@@ -182,6 +183,18 @@ const LESSON_SCHEMA_V2 = {
       },
     },
     diagram_mermaid: { type: "STRING" },
+    visual_refs: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          pageNumber: { type: "NUMBER" },
+          caption: { type: "STRING" },
+          reason: { type: "STRING" },
+        },
+        required: ["pageNumber", "caption"],
+      },
+    },
     common_mistakes: { type: "ARRAY", items: { type: "STRING" } },
     coverage_checklist: { type: "ARRAY", items: { type: "STRING" } },
     summary: { type: "STRING" },
@@ -1148,6 +1161,25 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
         </div>
       )}
       {lesson.diagram_mermaid && <MermaidRenderer chart={lesson.diagram_mermaid} paper />}
+      {lesson.source_visuals?.length > 0 && (
+        <div className="note-section">
+          <h2>Lecture Note Visuals</h2>
+          <div style={{ display: "grid", gap: 18 }}>
+            {lesson.source_visuals.map((visual, i) => (
+              <figure key={`${visual.pageNumber}-${i}`} style={{ margin: 0 }}>
+                <img
+                  src={visual.imageDataUrl}
+                  alt={visual.caption || `Lecture notes page ${visual.pageNumber}`}
+                  style={{ width: "100%", border: "1px solid #d8d1c5", borderRadius: 6 }}
+                />
+                <figcaption className="paper-muted" style={{ marginTop: 8 }}>
+                  <strong>Page {visual.pageNumber}:</strong> {visual.caption}
+                </figcaption>
+              </figure>
+            ))}
+          </div>
+        </div>
+      )}
       {(lesson.sections || []).map((section, idx) => (
         <section className="note-section" key={`${section.heading}-${idx}`}>
           <h2>{section.heading}</h2>
@@ -1663,7 +1695,7 @@ Rules:
     return { bytes, pageIndex: stored?.pageIndex || source.pageIndex || [] };
   };
 
-  const getDocumentPart = async (subject, { queryText, scoped = true, sourceKind = "notes" } = {}) => {
+  const getDocumentContext = async (subject, { queryText, scoped = true, sourceKind = "notes" } = {}) => {
     const files = sourceKind === "exam" ? subject.meta?.examFiles || [] : subject.meta?.sourceFiles || [];
     let source = files[0];
     if (sourceKind === "notes" && scoped && files.length > 1) {
@@ -1679,11 +1711,14 @@ Rules:
     if (!source) return null;
     const { bytes, pageIndex } = await getLocalSource(source);
     let payloadBytes = bytes;
+    let pages = [];
     if (scoped && pageIndex.length) {
-      const pages = scoreRelevantPages(pageIndex, queryText, 18);
+      pages = scoreRelevantPages(pageIndex, queryText, 18);
       payloadBytes = await extractPages(bytes, pages);
     }
-    if (payloadBytes.byteLength <= MAX_INLINE_DOCUMENT_BYTES) return inlinePdfDocumentPart(payloadBytes);
+    if (payloadBytes.byteLength <= MAX_INLINE_DOCUMENT_BYTES) {
+      return { documentPart: inlinePdfDocumentPart(payloadBytes), source, bytes, pageIndex, pages };
+    }
 
     const uploadRes = await fetch(UPLOAD_FILE_ENDPOINT, {
       method: "POST",
@@ -1697,7 +1732,37 @@ Rules:
     });
     const data = await uploadRes.json();
     if (!uploadRes.ok || data.error) throw new Error(data.error || "Could not upload PDF to Gemini.");
-    return { fileData: { mimeType: source.mimeType || "application/pdf", fileUri: data.fileUri } };
+    return { documentPart: { fileData: { mimeType: source.mimeType || "application/pdf", fileUri: data.fileUri } }, source, bytes, pageIndex, pages };
+  };
+
+  const getDocumentPart = async (subject, options = {}) => {
+    const context = await getDocumentContext(subject, options);
+    return context?.documentPart || null;
+  };
+
+  const buildSourceVisuals = async (lessonDraft, documentContext) => {
+    const refs = (lessonDraft?.visual_refs || [])
+      .filter((ref) => Number.isFinite(Number(ref.pageNumber)))
+      .slice(0, 2);
+    if (!refs.length || !documentContext?.bytes) return [];
+    const allowedPages = documentContext.pages?.length ? new Set(documentContext.pages) : null;
+    const visuals = [];
+    for (const ref of refs) {
+      const pageNumber = Math.round(Number(ref.pageNumber));
+      if (allowedPages && !allowedPages.has(pageNumber)) continue;
+      try {
+        const dataUrl = await renderPdfPageImage(documentContext.bytes, pageNumber);
+        visuals.push({
+          pageNumber,
+          caption: ref.caption || `Lecture notes page ${pageNumber}`,
+          reason: ref.reason || "",
+          imageDataUrl: dataUrl,
+        });
+      } catch (err) {
+        // A missing visual should not block the lesson.
+      }
+    }
+    return visuals;
   };
 
   const buildCurriculum = async ({ name, notesFiles, examFiles }) => {
@@ -1806,13 +1871,18 @@ Rules:
 
       setLoadingMsg("Drafting your lesson...");
       const sourceContext = findRelevantSourceContext(subject, topic, subtopic);
-      const documentPart = await getDocumentPart(subject, { queryText: `${topic.name} ${subtopic.name}`, scoped: true });
+      const documentContext = await getDocumentContext(subject, { queryText: `${topic.name} ${subtopic.name}`, scoped: true });
+      const visualPageContext = documentContext?.pages?.length
+        ? `The attached scoped PDF contains these original lecture-note page numbers: ${documentContext.pages.join(", ")}.`
+        : "No original page numbers are available for source visuals.";
       const draftPrompt = `${TUTOR_VOICE_PROMPT}
 
 ${buildTeachingPhilosophyPrompt(settings.studyContext)}
 
 Saved source-index context for this class:
 ${sourceContext}
+
+${visualPageContext}
 
 Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}".
 
@@ -1823,6 +1893,7 @@ Quality bar:
 - Prefer 5-9 substantial teaching sections when the notes warrant it.
 - Each section should include key_points listing the concrete ideas it covered.
 - Include coverage_checklist listing the major lecture-note items you covered, phrased as student-checkable bullets.
+- If a diagram, plotted graph, table, annotated slide, free-body diagram, circuit, flow chart, or visual layout in the lecture notes would materially help the student, include up to 2 visual_refs using the original pageNumber from the scoped page list. Use visuals only when they are genuinely useful.
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
@@ -1831,11 +1902,12 @@ Before returning, silently self-check every equation, claim, and worked-example 
       const finalLesson = safeParseJSON(await callGemini({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: draftPrompt }] }],
-        documentPart,
+        documentPart: documentContext?.documentPart,
         generationConfig: { temperature: 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
       }, { onStatus: setLoadingMsg }));
 
-      const payload = { ...finalLesson, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
+      const source_visuals = await buildSourceVisuals(finalLesson, documentContext);
+      const payload = { ...finalLesson, source_visuals, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
       setLesson(payload);
       setActive({ topic, subtopic });
