@@ -36,7 +36,7 @@ const GENERATE_ENDPOINT = "/api/generate";
 const UPLOAD_FILE_ENDPOINT = "/api/upload-file";
 const MAX_ATTEMPTS_STORED = 20;
 const QUESTION_BATCH_SIZE = 3;
-const APP_NAME = "StudyForge";
+const APP_NAME = "StudyLoop";
 
 const THEME_CHOICES = [
   { id: "aurora-dark", name: "Aurora Dark" },
