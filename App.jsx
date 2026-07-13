@@ -242,6 +242,28 @@ function assignIds(curriculum) {
   };
 }
 
+function normalizeName(value) {
+  return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function preserveCurriculumIds(previous, next) {
+  const previousTopics = new Map((previous?.topics || []).map((topic) => [normalizeName(topic.name), topic]));
+  return {
+    topics: (next?.topics || []).map((topic) => {
+      const existingTopic = previousTopics.get(normalizeName(topic.name));
+      const previousSubtopics = new Map((existingTopic?.subtopics || []).map((st) => [normalizeName(st.name), st]));
+      return {
+        ...topic,
+        id: topic.id || existingTopic?.id || crypto.randomUUID(),
+        subtopics: (topic.subtopics || []).map((st) => {
+          const existingSubtopic = previousSubtopics.get(normalizeName(st.name));
+          return { ...st, id: st.id || existingSubtopic?.id || crypto.randomUUID() };
+        }),
+      };
+    }),
+  };
+}
+
 function lessonKey(subjectId, subtopicId) {
   return `${subjectId}_${subtopicId}`;
 }
@@ -570,9 +592,9 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
         {step === "welcome" && (
           <>
             <h1 className="heading" style={{ marginTop: 0 }}>STEM Tutor AI</h1>
-            <p className="muted">Turn your own lecture PDFs into structured study notes, then practice with questions that match your exam style.</p>
+            <p className="muted">Create a module, upload its lecture PDFs, and let STEM Tutor organise them into topics, bite-sized classes, and lessons.</p>
             <p className="muted">Connecting your own free Gemini key keeps the app free to use, while STEM Tutor adds the prompting, review passes, and practice logic that make the output feel closer to a paid tutoring tool.</p>
-            <p className="muted">Your notes, subjects, and progress stay under your account and are not shared with other users.</p>
+            <p className="muted">Your notes, modules, and progress stay under your account and are not shared with other users.</p>
           </>
         )}
 
@@ -618,7 +640,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
         {step === "tutorial" && (
           <>
             <h1 className="heading" style={{ marginTop: 0 }}>A 60-second walkthrough</h1>
-            <p className="muted">After this, the dashboard will guide you through the real flow: create an optional module, add your first class, upload PDFs, and open a generated topic.</p>
+            <p className="muted">After this, the dashboard will guide you through the real flow: create a module, upload PDFs, review the generated topics, and open a class-sized lesson.</p>
             <p className="muted">You can skip it at any time, and replay it later from Settings.</p>
           </>
         )}
@@ -627,7 +649,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
           <>
             <h1 className="heading" style={{ marginTop: 0 }}>What are you studying?</h1>
             <p className="muted">This helps every generated lesson pitch itself at the right level for you, instead of a generic assumption.</p>
-            <label className="muted" style={{ fontSize: 13 }}>Subject and level</label>
+            <label className="muted" style={{ fontSize: 13 }}>Study level and context</label>
             <input
               className="input"
               value={studyContext}
@@ -703,7 +725,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
 
           <section className="card" style={{ padding: 22 }}>
             <h2 className="heading" style={{ marginTop: 0 }}>Study Preferences</h2>
-            <label className="muted" style={{ fontSize: 13 }}>Subject and level</label>
+            <label className="muted" style={{ fontSize: 13 }}>Study level and context</label>
             <input className="input" value={studyContext} onChange={(e) => setStudyContext(e.target.value)} placeholder='e.g. "3rd year mechanical engineering"' style={{ marginTop: 8 }} />
             <button className="btn" onClick={saveAiSettings} style={{ marginTop: 14 }}>Save AI settings</button>
           </section>
@@ -715,7 +737,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
 
           <section className="card" style={{ padding: 22 }}>
             <h2 className="heading" style={{ marginTop: 0 }}>Data & Privacy</h2>
-            <p className="muted">Subjects, modules, generated lessons, question history, and progress are stored under your Firebase user account when Firebase is configured. Source PDFs stay on this device in browser storage. Your Gemini key is saved to your settings so the app can make AI calls for your account.</p>
+            <p className="muted">Modules, generated lessons, question history, and progress are stored under your Firebase user account when Firebase is configured. Source PDFs stay on this device in browser storage. Your Gemini key is saved to your settings so the app can make AI calls for your account.</p>
             <button className="btn secondary" onClick={onDeleteData}>Delete my data</button>
           </section>
 
@@ -734,12 +756,11 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
 }
 
 const TUTORIAL_STEPS = [
-  { target: "addModule", title: "Start with a module", body: "Modules group related classes together. They are optional, so you can skip this if you only need one class." },
-  { target: "addSubject", title: "Add your first class", body: "A class is where you upload lecture PDFs and let the app generate topics from your material." },
+  { target: "addModule", title: "Create a module", body: "A module is the top-level folder for one course or unit, like Applied Dynamics II." },
   { target: "fileUpload", title: "Upload source PDFs", body: "Lecture notes stay on this device, while the generated curriculum and progress can sync through your account." },
-  { target: "buildCurriculum", title: "Build the curriculum", body: "This turns your PDFs into topics and subtopics you can study one at a time." },
-  { target: "subjectCard", title: "Open a class", body: "Subject cards show progress and remaining study time. Open one to see its generated topics." },
-  { target: "subtopicCard", title: "Start a topic", body: "Dim cards have not generated notes yet. Full-brightness cards are ready to reopen instantly." },
+  { target: "buildCurriculum", title: "Generate topics", body: "The AI groups your notes into the fewest useful topics and class-sized subtopics it can." },
+  { target: "subjectCard", title: "Open a module", body: "Module cards show progress and remaining study time. Open one to see its generated topics." },
+  { target: "subtopicCard", title: "Start a class", body: "Each class is a bite-sized lesson inside a topic. Dim cards have not generated notes yet." },
   { target: "done", title: "You're set up", body: "Use Settings to replay this walkthrough, update your API key, or change themes at any time." },
 ];
 
@@ -771,61 +792,30 @@ function Dashboard({
   onCreateModule, onRenameModule, onDeleteModule,
   onRenameSubject, onDeleteSubject, onMoveSubject,
 }) {
-  const ungrouped = subjects.filter((subject) => !subject.meta?.moduleId);
-  const isEmpty = subjects.length === 0 && modules.length === 0;
-  const moduleProgress = (moduleId) => {
-    const owned = subjects.filter((subject) => subject.meta?.moduleId === moduleId);
-    if (!owned.length) return 0;
-    return Math.round(owned.reduce((sum, subject) => sum + computeSubjectProgress(subject.meta?.curriculum, subject.masteryLog), 0) / owned.length);
-  };
+  const isEmpty = subjects.length === 0;
 
   return (
     <div className="app-shell">
       <div className="container">
         <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", marginBottom: 28 }}>
           <div>
-            <h1 className="heading" style={{ margin: 0 }}>Study Dashboard</h1>
-            <p className="muted" style={{ margin: "6px 0 0" }}>Subjects, modules, progress, and cached lessons in one place.</p>
+            <h1 className="heading" style={{ margin: 0 }}>Modules</h1>
+            <p className="muted" style={{ margin: "6px 0 0" }}>Create one module per course, upload notes at module level, then study AI-organised topics and classes.</p>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="btn secondary" onClick={onSettings}>Settings</button>
-            <button className="btn secondary" data-tour="addModule" onClick={onCreateModule}>Add Module</button>
-            <button className="btn" data-tour="addSubject" onClick={onAddSubject}>Add Subject</button>
+            <button className="btn" data-tour="addModule" onClick={onAddSubject}>Create Module</button>
           </div>
         </header>
 
         {isEmpty ? (
           <div className="card" style={{ padding: 40, textAlign: "center" }}>
-            <h2 className="heading" style={{ marginTop: 0 }}>No subjects yet</h2>
-            <p className="muted">Add your first subject and upload some lecture notes to build a curriculum.</p>
-            <button className="btn" data-tour="addSubject" onClick={onAddSubject} style={{ marginTop: 8 }}>Add Subject</button>
+            <h2 className="heading" style={{ marginTop: 0 }}>No modules yet</h2>
+            <p className="muted">Create your first module and upload lecture notes to generate topics and class-sized lessons.</p>
+            <button className="btn" data-tour="addModule" onClick={onAddSubject} style={{ marginTop: 8 }}>Create Module</button>
           </div>
         ) : (
-          <>
-            {modules.map((module) => {
-              const owned = subjects.filter((subject) => subject.meta?.moduleId === module.id);
-              return (
-                <section key={module.id} className="card" style={{ padding: 20, marginBottom: 22 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
-                    <div>
-                      <h2 className="heading" style={{ margin: 0 }}>{module.name}</h2>
-                      <div className="muted mono" style={{ fontSize: 13 }}>{moduleProgress(module.id)}% module progress</div>
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button className="btn ghost" onClick={() => onRenameModule(module)}>Rename</button>
-                      <button className="btn ghost" onClick={() => onDeleteModule(module)}>Delete</button>
-                    </div>
-                  </div>
-                  <SubjectGrid subjects={owned} modules={modules} onOpenSubject={onOpenSubject} onMoveSubject={onMoveSubject} onRenameSubject={onRenameSubject} onDeleteSubject={onDeleteSubject} />
-                </section>
-              );
-            })}
-
-            <section>
-              <h2 className="heading">Ungrouped Subjects</h2>
-              <SubjectGrid subjects={ungrouped} modules={modules} onOpenSubject={onOpenSubject} onMoveSubject={onMoveSubject} onRenameSubject={onRenameSubject} onDeleteSubject={onDeleteSubject} />
-            </section>
-          </>
+          <SubjectGrid subjects={subjects} modules={[]} onOpenSubject={onOpenSubject} onMoveSubject={onMoveSubject} onRenameSubject={onRenameSubject} onDeleteSubject={onDeleteSubject} />
         )}
       </div>
     </div>
@@ -833,7 +823,7 @@ function Dashboard({
 }
 
 function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRenameSubject, onDeleteSubject }) {
-  if (!subjects.length) return <p className="muted">No subjects here yet.</p>;
+  if (!subjects.length) return <p className="muted">No modules here yet.</p>;
   return (
     <div className="grid subject-grid">
       {subjects.map((subject) => {
@@ -842,9 +832,10 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
         return (
           <div key={subject.id} className="card" data-tour="subjectCard" style={{ padding: 18 }}>
             <button className="btn ghost" onClick={() => onOpenSubject(subject)} style={{ width: "100%", textAlign: "left", padding: 0, minHeight: "auto", color: "var(--text)" }}>
-              <h3 className="heading" style={{ margin: "8px 0" }}>{subject.meta?.name || "Untitled subject"}</h3>
+              <h3 className="heading" style={{ margin: "8px 0" }}>{subject.meta?.name || "Untitled module"}</h3>
               <div className="progress-bar"><span style={{ width: `${progress}%` }} /></div>
               <div className="muted mono" style={{ fontSize: 13, marginTop: 10 }}>{progress}% complete - {remaining} min left</div>
+              <div className="muted" style={{ fontSize: 13, marginTop: 8 }}>{subject.meta?.curriculum?.topics?.length || 0} topic{subject.meta?.curriculum?.topics?.length === 1 ? "" : "s"}</div>
             </button>
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button className="btn ghost" onClick={() => onRenameSubject(subject)} style={{ flex: 1 }}>Rename</button>
@@ -863,10 +854,26 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
   );
 }
 
-function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewWeak }) {
+function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewWeak, onAddModuleFiles, loading, loadingMsg, showToast }) {
+  const [notesFiles, setNotesFiles] = useState([]);
+  const [examFiles, setExamFiles] = useState([]);
   const masteryLog = subject.masteryLog || {};
   const weakCount = Object.values(masteryLog).filter((entry) => entry.status === "attempted").length;
   const progress = computeSubjectProgress(subject.meta?.curriculum, masteryLog);
+
+  const readFiles = async (files, setter, label) => {
+    const next = [];
+    for (const file of Array.from(files || [])) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const pageIndex = await buildPageIndex(new File([bytes], file.name, { type: file.type || "application/pdf" }));
+      next.push({ name: file.name, type: file.type || "application/pdf", bytes, pageIndex });
+    }
+    setter(next);
+    showToast(`${label} indexed and ready.`, "success");
+  };
+
+  const canUpdate = notesFiles.length > 0 || examFiles.length > 0;
+
   return (
     <div className="app-shell">
       <div className="container">
@@ -874,10 +881,40 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewW
         <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", marginBottom: 22 }}>
           <div>
             <h1 className="heading" style={{ marginBottom: 6 }}>{subject.meta?.name}</h1>
-            <div className="muted mono">{progress}% complete</div>
+            <div className="muted mono">{progress}% complete - {(subject.meta?.curriculum?.topics || []).length} topic{(subject.meta?.curriculum?.topics || []).length === 1 ? "" : "s"}</div>
           </div>
           {weakCount > 0 && <button className="btn secondary" onClick={onReviewWeak}>Review {weakCount} weak topic{weakCount > 1 ? "s" : ""}</button>}
         </header>
+
+        <section className="card" style={{ padding: 20, marginBottom: 28 }}>
+          <h2 className="heading" style={{ marginTop: 0 }}>Module source notes</h2>
+          <p className="muted">Upload more lecture notes or past papers here. The module will preserve existing topics where possible, add new topics when the notes warrant it, and keep classes bite-sized.</p>
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>More lecture notes</label>
+              <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ marginTop: 8 }} />
+              {notesFiles.length > 0 && <p className="muted">{notesFiles.map((f) => f.name).join(", ")}</p>}
+            </div>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>More past papers</label>
+              <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setExamFiles, "Past papers")} style={{ marginTop: 8 }} />
+              {examFiles.length > 0 && <p className="muted">{examFiles.map((f) => f.name).join(", ")}</p>}
+            </div>
+          </div>
+          <button
+            className="btn secondary"
+            disabled={!canUpdate || loading}
+            onClick={async () => {
+              await onAddModuleFiles(subject, { notesFiles, examFiles });
+              setNotesFiles([]);
+              setExamFiles([]);
+            }}
+            style={{ marginTop: 16 }}
+          >
+            {loading ? loadingMsg || "Updating..." : "Update Module Organisation"}
+          </button>
+        </section>
+
         {(subject.meta?.curriculum?.topics || []).map((topic) => (
           <section key={topic.id} style={{ marginBottom: 34 }}>
             <h2 className="heading" style={{ fontSize: 18 }}>{topic.name}</h2>
@@ -902,7 +939,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewW
                       <span className="mono muted">{st.difficulty || 1}/5</span>
                     </div>
                     <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
-                      {entry?.status === "mastered" ? "Mastered" : entry?.status === "attempted" ? "Needs review" : hasLesson ? "Notes ready" : "Not generated yet"}
+                      {entry?.status === "mastered" ? "Mastered" : entry?.status === "attempted" ? "Needs review" : hasLesson ? "Lesson ready" : "Lesson not generated yet"}
                     </div>
                   </div>
                 );
@@ -935,9 +972,10 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
     <div className="app-shell">
       <div className="container narrow card" style={{ padding: 28 }}>
         <button className="btn ghost" onClick={onBack}>Back</button>
-        <h1 className="heading">Add Subject</h1>
-        <p className="muted">PDFs are stored on this device. Your subject, lessons, questions, and progress can sync through Firestore, but source PDFs must be re-uploaded on a different device before regenerating content there.</p>
-        <label className="muted" style={{ fontSize: 13 }}>Subject title</label>
+        <h1 className="heading">Create Module</h1>
+        <p className="muted">A module is the folder for one course or unit. Upload lecture notes and past papers at this level; STEM Tutor will organise them into topics, subtopics/classes, and lessons.</p>
+        <p className="muted">PDFs are stored on this device. Your module, lessons, questions, and progress can sync through Firestore, but source PDFs must be re-uploaded on a different device before regenerating content there.</p>
+        <label className="muted" style={{ fontSize: 13 }}>Module title</label>
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 18px" }} />
         <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDFs</label>
         <input className="input" data-tour="fileUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
@@ -946,7 +984,7 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
         <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setExamFiles, "Past papers")} style={{ margin: "8px 0 10px" }} />
         {examFiles.length > 0 && <p className="muted">{examFiles.map((f) => f.name).join(", ")}</p>}
         <button className="btn" data-tour="buildCurriculum" disabled={loading || !name.trim() || notesFiles.length === 0} onClick={() => onCreate({ name, notesFiles, examFiles })} style={{ width: "100%", marginTop: 16 }}>
-          {loading ? loadingMsg || "Working..." : "Build Curriculum"}
+          {loading ? loadingMsg || "Working..." : "Generate Topics"}
         </button>
       </div>
     </div>
@@ -1039,7 +1077,7 @@ function QuestionBankPanel({ bank, onOpenQuestion }) {
     if ((last.partial_credit_percent ?? 0) > 0) return { label: "Partial", color: "var(--warning)" };
     return { label: "Wrong", color: "#ef4444" };
   };
-  if (!bank.length) return <p className="muted">No questions generated yet for this subtopic.</p>;
+  if (!bank.length) return <p className="muted">No questions generated yet for this class.</p>;
   return (
     <div className="grid" style={{ gap: 10 }}>
       {bank.map((q) => {
@@ -1070,7 +1108,7 @@ function LearnView({
   return (
     <div className="app-shell">
       <div className="container">
-        <button className="btn ghost" onClick={onBack}>Back to subject</button>
+        <button className="btn ghost" onClick={onBack}>Back to module</button>
         <h1 className="heading">{active.subtopic.name}</h1>
 
         {inPractice && (
@@ -1337,7 +1375,7 @@ function StemTutor() {
         setSelectedSubject(subjects[0]);
         setScreen("subject");
       } else {
-        showToast("Create a subject first, then this step will make more sense.", "info");
+        showToast("Create a module first, then this step will make more sense.", "info");
         return;
       }
     }
@@ -1352,7 +1390,7 @@ function StemTutor() {
     const prev = Math.max(0, tutorialStep - 1);
     const target = TUTORIAL_STEPS[prev]?.target;
     if (target === "fileUpload" || target === "buildCurriculum") setScreen("add");
-    if (target === "addModule" || target === "addSubject" || target === "subjectCard") setScreen("dashboard");
+    if (target === "addModule" || target === "subjectCard") setScreen("dashboard");
     setTutorialStep(prev);
   };
 
@@ -1437,19 +1475,50 @@ function StemTutor() {
 
   const buildCurriculum = async ({ name, notesFiles, examFiles }) => {
     setLoading(true);
-    setLoadingMsg("Saving PDFs on this device and mapping the syllabus...");
+    setLoadingMsg("Saving PDFs on this device and organising the module...");
     try {
       const tempSubject = { meta: { sourceFiles: notesFiles.map((file, i) => ({ ...file, localPdfId: `session-notes-${i}` })) } };
       notesFiles.forEach((file, i) => sessionPdfBytes.current.set(`session-notes-${i}`, file.bytes));
       const documentPart = await getDocumentPart(tempSubject, { scoped: false });
-      const prompt = `You are designing a college-level curriculum for "${name}" based on the attached lecture notes PDF. Break the material into topics and subtopics that mirror how the notes are actually structured. Do not invent topics that are not covered. Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
+      const prompt = `You are organising the college module "${name}" from the attached lecture notes PDF.
+
+Return a compact module map with this hierarchy only:
+Module -> topics -> subtopics/classes -> lessons generated later.
+
+Rules:
+- Topics must be broad lecture-note sections or recurring blocks the slides clearly support, such as "Vibrations" or "3D Kinematics".
+- Subtopics are class-sized lesson units inside each topic, such as "free undamped vibrations" or "forced vibrations".
+- Minimise the number of subtopics. Prefer fewer, well-scoped classes over lots of tiny fragments.
+- Do not create a subtopic for every heading, equation, or slide. Combine adjacent material when one lesson can teach it coherently.
+- Do not invent topics that are not covered by the attached notes.
+- Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
       const res = await callGemini({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         documentPart,
         generationConfig: { temperature: 0.2, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
       }, { onStatus: setLoadingMsg });
-      const curriculum = assignIds(safeParseJSON(res));
+      let curriculum = assignIds(safeParseJSON(res));
+      for (let i = 1; i < notesFiles.length; i += 1) {
+        setLoadingMsg(`Folding in ${notesFiles[i].name}...`);
+        const extraSubject = { meta: { sourceFiles: [{ ...notesFiles[i], localPdfId: `session-notes-${i}` }] } };
+        const extraDocumentPart = await getDocumentPart(extraSubject, { scoped: false });
+        const extraPrompt = `Update the existing module organisation for "${name}" using this additional lecture notes PDF.
+
+Existing module map:
+${JSON.stringify(curriculum)}
+
+Return the full updated module map with the hierarchy Module -> topics -> subtopics/classes -> lessons generated later.
+
+Preserve existing broad topics when the new notes fit them. Add a new topic only when the notes clearly introduce a distinct overarching area. Add or adjust subtopics/classes inside an existing topic when that is enough. Minimise the number of subtopics and avoid duplicate near-synonyms.`;
+        const extraRes = await callGemini({
+          apiKey: settings.geminiApiKey,
+          contents: [{ role: "user", parts: [{ text: extraPrompt }] }],
+          documentPart: extraDocumentPart,
+          generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
+        }, { onStatus: setLoadingMsg });
+        curriculum = preserveCurriculumIds(curriculum, safeParseJSON(extraRes));
+      }
       if (!curriculum.topics?.length) throw new Error("The AI returned an empty curriculum. Try more complete lecture notes.");
 
       const subjectId = hasFirebase && db ? doc(collection(db, "users", uid, "subjects")).id : crypto.randomUUID();
@@ -1477,6 +1546,65 @@ function StemTutor() {
     }
   };
 
+  const updateModuleFromFiles = async (subject, { notesFiles, examFiles }) => {
+    if (!notesFiles.length && !examFiles.length) return;
+    setLoading(true);
+    setLoadingMsg("Updating module organisation...");
+    try {
+      const newSourceFiles = await storeSourceFiles(subject.id, notesFiles, "notes");
+      const newExamFiles = await storeSourceFiles(subject.id, examFiles, "exam");
+      let curriculum = subject.meta?.curriculum || { topics: [] };
+
+      if (newSourceFiles.length) {
+        for (const sourceFile of newSourceFiles) {
+          setLoadingMsg(`Folding in ${sourceFile.name}...`);
+          const tempSubject = { meta: { sourceFiles: [sourceFile] } };
+          const documentPart = await getDocumentPart(tempSubject, { scoped: false });
+          const prompt = `Update the existing module organisation for "${subject.meta.name}" using the newly attached lecture notes.
+
+Existing module map:
+${JSON.stringify(curriculum)}
+
+Return the full updated module map with this hierarchy:
+Module -> topics -> subtopics/classes -> lessons generated later.
+
+Rules:
+- Preserve existing broad topics when the new notes fit them.
+- Add a new topic only when the new notes clearly introduce a distinct overarching area.
+- Add or adjust subtopics/classes inside an existing topic when that is enough.
+- Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
+- Do not duplicate existing subtopics under slightly different names.
+- Do not invent content that is not supported by either the existing map or the attached notes.
+- Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
+          const res = await callGemini({
+            apiKey: settings.geminiApiKey,
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            documentPart,
+            generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: CURRICULUM_SCHEMA },
+          }, { onStatus: setLoadingMsg });
+          curriculum = preserveCurriculumIds(curriculum, safeParseJSON(res));
+        }
+      }
+
+      const nextMeta = {
+        ...subject.meta,
+        curriculum,
+        sourceFiles: [...(subject.meta?.sourceFiles || []), ...newSourceFiles],
+        examFiles: [...(subject.meta?.examFiles || []), ...newExamFiles],
+        examPlan: newExamFiles.length ? null : subject.meta?.examPlan || null,
+      };
+      await saveSubject(subject.id, { meta: nextMeta });
+      const nextSubject = { ...subject, meta: nextMeta };
+      setSelectedSubject(nextSubject);
+      setSubjects((prev) => prev.map((item) => item.id === subject.id ? nextSubject : item));
+      showToast(newSourceFiles.length ? "Module topics updated." : "Past papers added to the module.", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const ensureExamPlan = async (subject) => {
     if (subject.meta?.examPlan) return subject.meta.examPlan;
     if (!subject.meta?.examFiles?.length) return DEFAULT_EXAM_PLAN;
@@ -1485,7 +1613,7 @@ function StemTutor() {
       const documentPart = await getDocumentPart(subject, { scoped: false, sourceKind: "exam" });
       const res = await callGemini({
         apiKey: settings.geminiApiKey,
-        contents: [{ role: "user", parts: [{ text: `Analyze the attached past exam paper for "${subject.meta.name}". Identify the distribution of question types, typical marks, and style conventions.` }] }],
+        contents: [{ role: "user", parts: [{ text: `Analyze the attached past exam paper for the module "${subject.meta.name}". Identify the distribution of question types, typical marks, and style conventions.` }] }],
         documentPart,
         generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: EXAM_PLAN_SCHEMA },
       }, { onStatus: setLoadingMsg });
@@ -1520,7 +1648,7 @@ function StemTutor() {
 
 ${buildTeachingPhilosophyPrompt(settings.studyContext)}
 
-Create a sectioned lesson for "${subtopic.name}" in the topic "${topic.name}" for "${subject.meta.name}". Refer to the attached lecture notes document for source material. Return only the requested JSON.`;
+Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}". Keep the scope bite-sized: teach this class well, but do not expand into neighbouring classes unless needed for context. Refer to the attached lecture notes document for source material. Return only the requested JSON.`;
       let draft = safeParseJSON(await callGemini({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: draftPrompt }] }],
@@ -1554,7 +1682,7 @@ ${JSON.stringify(draft)}`;
       try {
         const critique = safeParseJSON(await callGemini({
           apiKey: settings.geminiApiKey,
-          contents: [{ role: "user", parts: [{ text: `You are a professor in ${subject.meta.name} fact-checking a junior tutor's lesson before it reaches a student. Check every equation, every claim, and the worked example for correctness. Also flag any language that reads as filler, generic encouragement, or unearned praise rather than substantive feedback. Be specific and actionable.\n\nLesson:\n${JSON.stringify(draft)}` }] }],
+          contents: [{ role: "user", parts: [{ text: `You are a professor teaching the module ${subject.meta.name}, fact-checking a junior tutor's class-sized lesson before it reaches a student. Check every equation, every claim, and the worked example for correctness. Also flag any language that reads as filler, generic encouragement, or unearned praise rather than substantive feedback. Be specific and actionable.\n\nLesson:\n${JSON.stringify(draft)}` }] }],
           generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: REVIEW_SCHEMA },
         }, { onStatus: setLoadingMsg }));
         if (critique.verdict === "needs_revision") {
@@ -1613,7 +1741,7 @@ ${JSON.stringify(draft)}`;
       const chosenType = pickWeighted(plan.question_types, "weight_percent");
       const documentPart = await getDocumentPart(selectedSubject, { queryText: `${active.topic.name} ${active.subtopic.name}`, scoped: true });
       const adaptiveDifficulty = computeAdaptiveDifficulty(active.subtopic.difficulty, bank);
-      const prompt = `Write ${QUESTION_BATCH_SIZE} DISTINCT exam-style practice questions on "${active.subtopic.name}" for a college exam in "${selectedSubject.meta.name}", each testing a different angle of the subtopic so they don't feel repetitive.
+      const prompt = `Write ${QUESTION_BATCH_SIZE} DISTINCT exam-style practice questions on the class "${active.subtopic.name}" inside the topic "${active.topic.name}" for a college exam in the module "${selectedSubject.meta.name}", each testing a different angle of this class so they don't feel repetitive.
 
 Question type: ${chosenType.type}. Style guidance from the real past papers: ${chosenType.style_notes || plan.overall_notes || "standard exam phrasing"}.
 Difficulty: ${adaptiveDifficulty}/5.
@@ -1665,7 +1793,7 @@ If multiple_choice, include exactly 4 plausible options per question and put the
       const counts = {};
       (nextEntry.mistakes || []).forEach((m) => { counts[m.type] = (counts[m.type] || 0) + 1; });
       const repeated = Object.entries(counts).find(([type, count]) => count >= 2 && type !== "none");
-      setMistakePattern(repeated ? `You've made a "${repeated[0].replace(/_/g, " ")}" error ${repeated[1]} times on this subtopic.` : null);
+      setMistakePattern(repeated ? `You've made a "${repeated[0].replace(/_/g, " ")}" error ${repeated[1]} times on this class.` : null);
     } else {
       setMistakePattern(null);
     }
@@ -1693,7 +1821,7 @@ If multiple_choice, include exactly 4 plausible options per question and put the
           partial_credit_percent: correct ? 100 : 0,
           feedback: correct ? "Correct." : `Not quite. The correct answer was: ${q.correct_option}`,
           misconception: correct ? "" : `Selected "${selectedOption}" instead of the correct option.`,
-          what_to_review: correct ? "" : q.hint || "Review this subtopic's core concept.",
+          what_to_review: correct ? "" : q.hint || "Review this class's core concept.",
           mistake_type: correct ? "none" : "concept_gap",
         };
       } else {
@@ -1788,11 +1916,11 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
       setSelectedSubject(null);
       setScreen("dashboard");
     }
-    showToast("Subject deleted.", "info");
+    showToast("Module deleted.", "info");
   };
 
   const deleteMyData = async () => {
-    if (!window.confirm("Delete all subjects, modules, lessons, question banks, and local settings for this account?")) return;
+    if (!window.confirm("Delete all modules, lessons, question banks, and local settings for this account?")) return;
     if (hasFirebase && db) {
       await Promise.all(subjects.map((subject) => deleteSubject(subject)));
       await Promise.all(modules.map((module) => deleteDoc(doc(db, "users", uid, "modules", module.id)).catch(() => {})));
@@ -1888,7 +2016,17 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
       ) : screen === "add" ? (
         <AddSubject onBack={() => setScreen("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} />
       ) : screen === "subject" && selectedSubject ? (
-        <SubjectView subject={selectedSubject} lessonStatus={lessonStatus} onBack={() => setScreen("dashboard")} onStartSubtopic={(topic, subtopic) => generateLesson(selectedSubject, topic, subtopic)} onReviewWeak={reviewWeak} />
+        <SubjectView
+          subject={selectedSubject}
+          lessonStatus={lessonStatus}
+          onBack={() => setScreen("dashboard")}
+          onStartSubtopic={(topic, subtopic) => generateLesson(selectedSubject, topic, subtopic)}
+          onReviewWeak={reviewWeak}
+          onAddModuleFiles={updateModuleFromFiles}
+          loading={loading}
+          loadingMsg={loadingMsg}
+          showToast={showToast}
+        />
       ) : screen === "learn" && selectedSubject && active && lesson ? (
         <LearnView
           subject={selectedSubject}
@@ -1944,14 +2082,14 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
       {dashboardModal?.kind === "deleteModule" && (
         <ConfirmModal
           title="Delete module?"
-          message={`"${dashboardModal.module.name}" will be removed. Its subjects will become ungrouped, not deleted.`}
+          message={`"${dashboardModal.module.name}" will be removed. Older grouped module records will become ungrouped, not deleted.`}
           onCancel={() => setDashboardModal(null)}
           onConfirm={async () => { await deleteModule(dashboardModal.module.id); setDashboardModal(null); }}
         />
       )}
       {dashboardModal?.kind === "renameSubject" && (
         <RenameModal
-          title="Rename subject"
+          title="Rename module"
           initialValue={dashboardModal.subject.meta?.name || ""}
           onCancel={() => setDashboardModal(null)}
           onSave={async (name) => { await saveSubject(dashboardModal.subject.id, { meta: { ...dashboardModal.subject.meta, name } }); setDashboardModal(null); }}
@@ -1959,7 +2097,7 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
       )}
       {dashboardModal?.kind === "deleteSubject" && (
         <ConfirmModal
-          title="Delete subject?"
+          title="Delete module?"
           message={`"${dashboardModal.subject.meta?.name}" and all of its notes and practice history will be permanently deleted.`}
           onCancel={() => setDashboardModal(null)}
           onConfirm={async () => { await deleteSubject(dashboardModal.subject); setDashboardModal(null); }}
@@ -1968,7 +2106,7 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
 
       {!hasFirebase && settings.onboarded && (
         <div style={{ position: "fixed", left: 16, bottom: 16, maxWidth: 360 }} className="toast">
-          Firebase env vars are missing, so subjects and progress are local-only. PDFs are always stored on this device.
+          Firebase env vars are missing, so modules and progress are local-only. PDFs are always stored on this device.
         </div>
       )}
     </>
