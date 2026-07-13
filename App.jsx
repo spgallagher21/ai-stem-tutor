@@ -39,7 +39,14 @@ const QUESTION_BATCH_SIZE = 3;
 const THEME_CHOICES = [
   { id: "aurora", name: "Midnight Aurora" },
   { id: "sunset", name: "Pink Sunset" },
-  { id: "refraction", name: "White Refraction" },
+  { id: "refraction", name: "Daybreak" },
+];
+
+const REFERRAL_CHOICES = [
+  { id: "friend", label: "Friend/classmate" },
+  { id: "instagram", label: "Instagram" },
+  { id: "search", label: "Online search" },
+  { id: "other", label: "Other" },
 ];
 
 const QUESTION_TYPE_LABELS = {
@@ -436,10 +443,16 @@ useEffect(() => {
 function ThemePreviewCard({ theme, selected, onSelect }) {
   return (
     <button className="card" data-theme={theme.id} onClick={onSelect} aria-label={theme.name} style={{ width: "100%", textAlign: "left", padding: 18, cursor: "pointer", borderColor: selected ? "var(--accent-1)" : "var(--border)", color: "var(--text)" }}>
+      <div className="heading" style={{ fontWeight: 700, marginBottom: 12 }}>{theme.name}</div>
       <div className="progress-bar" style={{ marginBottom: 14 }}><span style={{ width: "68%" }} /></div>
       <div style={{ display: "grid", gap: 8 }}>
         <div style={{ height: 28, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6 }} />
         <div style={{ height: 28, width: "72%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6 }} />
+        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <span style={{ width: 38, height: 16, borderRadius: 999, background: "var(--accent-1)", display: "inline-block" }} />
+          <span style={{ width: 38, height: 16, borderRadius: 999, background: "var(--accent-2)", display: "inline-block" }} />
+          <span style={{ width: 38, height: 16, borderRadius: 999, background: "var(--accent-3)", display: "inline-block" }} />
+        </div>
       </div>
     </button>
   );
@@ -495,7 +508,7 @@ function ConfirmModal({ title, message, confirmLabel = "Delete", onCancel, onCon
 }
 
 // --- 1.1 Multi-step onboarding ---
-const ONBOARDING_STEPS_FULL = ["welcome", "apikey", "context", "theme"];
+const ONBOARDING_STEPS_FULL = ["welcome", "apikey", "theme", "survey", "context", "tutorial"];
 const ONBOARDING_STEPS_EDIT = ["apikey", "context", "theme"];
 
 function Onboarding({ settings, onDone, showToast, editMode = false, onCancel }) {
@@ -504,6 +517,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
   const [apiKey, setApiKey] = useState(settings.geminiApiKey || "");
   const [theme, setTheme] = useState(settings.theme || "aurora");
   const [studyContext, setStudyContext] = useState(settings.studyContext || "");
+  const [referralSource, setReferralSource] = useState(settings.referralSource || "");
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -518,7 +532,9 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
       geminiApiKey: apiKey.trim(),
       theme,
       studyContext: studyContext.trim(),
+      referralSource,
       onboarded: true,
+      tutorialSeen: editMode ? settings.tutorialSeen : false,
     });
   };
 
@@ -554,7 +570,9 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
         {step === "welcome" && (
           <>
             <h1 className="heading" style={{ marginTop: 0 }}>STEM Tutor AI</h1>
-            <p className="muted">Create subjects from your own lecture PDFs, generate reusable notes, and practice against your exam style.</p>
+            <p className="muted">Turn your own lecture PDFs into structured study notes, then practice with questions that match your exam style.</p>
+            <p className="muted">Connecting your own free Gemini key keeps the app free to use, while STEM Tutor adds the prompting, review passes, and practice logic that make the output feel closer to a paid tutoring tool.</p>
+            <p className="muted">Your notes, subjects, and progress stay under your account and are not shared with other users.</p>
           </>
         )}
 
@@ -562,7 +580,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
           <>
             <h1 className="heading" style={{ marginTop: 0 }}>{editMode ? "Update your API key" : "Your Gemini API key"}</h1>
             <p className="muted">
-              This uses your own Gemini quota, not a shared one. Your key is saved to your account and only ever readable by you.
+              This is what keeps STEM Tutor free for you: your own Gemini quota powers the AI, and the app layers specialist tutoring prompts and checks on top.
             </p>
             <p className="muted" style={{ fontSize: 13 }}>
               Get a free key at{" "}
@@ -574,6 +592,34 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
             {editMode && (
               <p className="muted mono" style={{ fontSize: 12, marginTop: 16 }}>AI calls today: {getUsageTodayCount()}</p>
             )}
+          </>
+        )}
+
+        {step === "survey" && (
+          <>
+            <h1 className="heading" style={{ marginTop: 0 }}>Quick question</h1>
+            <p className="muted">How did you hear about us?</p>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", marginTop: 16 }}>
+              {REFERRAL_CHOICES.map((choice) => (
+                <button
+                  key={choice.id}
+                  className={referralSource === choice.id ? "btn" : "btn secondary"}
+                  onClick={() => setReferralSource(choice.id)}
+                  style={{ textAlign: "center" }}
+                >
+                  {choice.label}
+                </button>
+              ))}
+            </div>
+            <button className="btn ghost" onClick={() => setReferralSource("")} style={{ marginTop: 12 }}>Prefer not to say</button>
+          </>
+        )}
+
+        {step === "tutorial" && (
+          <>
+            <h1 className="heading" style={{ marginTop: 0 }}>A 60-second walkthrough</h1>
+            <p className="muted">After this, the dashboard will guide you through the real flow: create an optional module, add your first class, upload PDFs, and open a generated topic.</p>
+            <p className="muted">You can skip it at any time, and replay it later from Settings.</p>
           </>
         )}
 
@@ -606,7 +652,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
         <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
           {(!isFirst || editMode) && <button className="btn ghost" onClick={goBack}>{isFirst ? "Cancel" : "Back"}</button>}
           <button className="btn" style={{ flex: 1 }} onClick={goNext}>
-            {isLast ? (editMode ? "Save Settings" : "Get Started") : "Continue"}
+            {isLast ? (editMode ? "Save Settings" : "Open Dashboard") : "Continue"}
           </button>
         </div>
       </div>
@@ -614,30 +660,108 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
   );
 }
 
-// --- 1.1.5 Short dismissible tutorial shown once after onboarding ---
-const TUTORIAL_CARDS = [
-  { title: "Open a subject", body: "Tap a subject card to jump into its topics and lessons." },
-  { title: "Track mastery", body: "This progress bar fills in as you master more subtopics in a subject." },
-  { title: "Notes ready to open", body: "Subtopics that already have generated notes are shown at full brightness; new ones are dimmed." },
-  { title: "Group with modules", body: 'Use "Add Module" to group related subjects together, and drag subjects between them from their card.' },
-];
+function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteData, showToast }) {
+  const [apiKey, setApiKey] = useState(settings.geminiApiKey || "");
+  const [studyContext, setStudyContext] = useState(settings.studyContext || "");
 
-function TutorialOverlay({ onDone }) {
-  const [i, setI] = useState(0);
-  const card = TUTORIAL_CARDS[i];
-  const isLast = i === TUTORIAL_CARDS.length - 1;
+  const applyTheme = async (theme) => {
+    document.documentElement.dataset.theme = theme;
+    await onSave({ theme });
+  };
+
+  const saveAiSettings = async () => {
+    await onSave({ geminiApiKey: apiKey.trim(), studyContext: studyContext.trim() });
+    showToast("Settings saved.", "success");
+  };
+
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "grid", placeItems: "center", zIndex: 1800, padding: 16 }}>
-      <div className="card" style={{ padding: 24, width: "100%", maxWidth: 360 }}>
-        <div className="muted mono" style={{ fontSize: 12, marginBottom: 8 }}>Tip {i + 1} of {TUTORIAL_CARDS.length}</div>
-        <h3 className="heading" style={{ marginTop: 0 }}>{card.title}</h3>
-        <p className="muted">{card.body}</p>
-        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 18 }}>
-          <button className="btn ghost" onClick={onDone}>Skip</button>
-          <button className="btn" onClick={() => (isLast ? onDone() : setI((n) => n + 1))}>{isLast ? "Done" : "Next"}</button>
+    <div className="app-shell">
+      <div className="container">
+        <button className="btn ghost" onClick={onClose}>Back</button>
+        <header style={{ marginBottom: 24 }}>
+          <h1 className="heading" style={{ marginBottom: 6 }}>Settings</h1>
+          <p className="muted" style={{ margin: 0 }}>Manage appearance, AI setup, privacy, and help.</p>
+        </header>
+
+        <div className="grid" style={{ gap: 20 }}>
+          <section className="card" style={{ padding: 22 }}>
+            <h2 className="heading" style={{ marginTop: 0 }}>Appearance</h2>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+              {THEME_CHOICES.map((choice) => (
+                <ThemePreviewCard key={choice.id} theme={choice} selected={settings.theme === choice.id} onSelect={() => applyTheme(choice.id)} />
+              ))}
+            </div>
+          </section>
+
+          <section className="card" style={{ padding: 22 }}>
+            <h2 className="heading" style={{ marginTop: 0 }}>AI & API Key</h2>
+            <p className="muted">Your own Gemini key keeps the app free to use and powers the tutoring pipeline.</p>
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Get a Gemini API key</a>
+            <input className="input" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" style={{ marginTop: 12 }} />
+            <p className="muted mono" style={{ fontSize: 12 }}>AI calls today: {getUsageTodayCount()}</p>
+          </section>
+
+          <section className="card" style={{ padding: 22 }}>
+            <h2 className="heading" style={{ marginTop: 0 }}>Study Preferences</h2>
+            <label className="muted" style={{ fontSize: 13 }}>Subject and level</label>
+            <input className="input" value={studyContext} onChange={(e) => setStudyContext(e.target.value)} placeholder='e.g. "3rd year mechanical engineering"' style={{ marginTop: 8 }} />
+            <button className="btn" onClick={saveAiSettings} style={{ marginTop: 14 }}>Save AI settings</button>
+          </section>
+
+          <section className="card" style={{ padding: 22 }}>
+            <h2 className="heading" style={{ marginTop: 0 }}>Notifications</h2>
+            <p className="muted">Study reminders will live here after launch. For now, your learning flow stays quiet unless you ask it to do something.</p>
+          </section>
+
+          <section className="card" style={{ padding: 22 }}>
+            <h2 className="heading" style={{ marginTop: 0 }}>Data & Privacy</h2>
+            <p className="muted">Subjects, modules, generated lessons, question history, and progress are stored under your Firebase user account when Firebase is configured. Source PDFs stay on this device in browser storage. Your Gemini key is saved to your settings so the app can make AI calls for your account.</p>
+            <button className="btn secondary" onClick={onDeleteData}>Delete my data</button>
+          </section>
+
+          <section className="card" style={{ padding: 22 }}>
+            <h2 className="heading" style={{ marginTop: 0 }}>Help</h2>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button className="btn secondary" onClick={onReplayTutorial}>Replay tutorial</button>
+              <button className="btn ghost" onClick={() => showToast("Support contact coming before public launch.", "info")}>Contact support</button>
+            </div>
+            <p className="muted mono" style={{ fontSize: 12, marginTop: 16 }}>AI STEM Tutor launch candidate</p>
+          </section>
         </div>
       </div>
     </div>
+  );
+}
+
+const TUTORIAL_STEPS = [
+  { target: "addModule", title: "Start with a module", body: "Modules group related classes together. They are optional, so you can skip this if you only need one class." },
+  { target: "addSubject", title: "Add your first class", body: "A class is where you upload lecture PDFs and let the app generate topics from your material." },
+  { target: "fileUpload", title: "Upload source PDFs", body: "Lecture notes stay on this device, while the generated curriculum and progress can sync through your account." },
+  { target: "buildCurriculum", title: "Build the curriculum", body: "This turns your PDFs into topics and subtopics you can study one at a time." },
+  { target: "subjectCard", title: "Open a class", body: "Subject cards show progress and remaining study time. Open one to see its generated topics." },
+  { target: "subtopicCard", title: "Start a topic", body: "Dim cards have not generated notes yet. Full-brightness cards are ready to reopen instantly." },
+  { target: "done", title: "You're set up", body: "Use Settings to replay this walkthrough, update your API key, or change themes at any time." },
+];
+
+function TutorialOverlay({ step, onNext, onBack, onSkip }) {
+  const current = TUTORIAL_STEPS[step] || TUTORIAL_STEPS[0];
+  const isLast = step >= TUTORIAL_STEPS.length - 1;
+  return (
+    <>
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1700, pointerEvents: "none" }} />
+      <div className="card" style={{ position: "fixed", right: 20, bottom: 20, padding: 22, width: "min(380px, calc(100vw - 40px))", zIndex: 2000 }}>
+        <div className="muted mono" style={{ fontSize: 12, marginBottom: 8 }}>Step {step + 1} of {TUTORIAL_STEPS.length}</div>
+        <h3 className="heading" style={{ marginTop: 0 }}>{current.title}</h3>
+        <p className="muted">{current.body}</p>
+        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 18 }}>
+          <button className="btn ghost" onClick={onSkip}>Skip</button>
+          <div style={{ display: "flex", gap: 10 }}>
+            {step > 0 && <button className="btn secondary" onClick={onBack}>Back</button>}
+            <button className="btn" onClick={onNext}>{isLast ? "Done" : "Next"}</button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -665,8 +789,8 @@ function Dashboard({
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="btn secondary" onClick={onSettings}>Settings</button>
-            <button className="btn secondary" onClick={onCreateModule}>Add Module</button>
-            <button className="btn" onClick={onAddSubject}>Add Subject</button>
+            <button className="btn secondary" data-tour="addModule" onClick={onCreateModule}>Add Module</button>
+            <button className="btn" data-tour="addSubject" onClick={onAddSubject}>Add Subject</button>
           </div>
         </header>
 
@@ -674,7 +798,7 @@ function Dashboard({
           <div className="card" style={{ padding: 40, textAlign: "center" }}>
             <h2 className="heading" style={{ marginTop: 0 }}>No subjects yet</h2>
             <p className="muted">Add your first subject and upload some lecture notes to build a curriculum.</p>
-            <button className="btn" onClick={onAddSubject} style={{ marginTop: 8 }}>Add Subject</button>
+            <button className="btn" data-tour="addSubject" onClick={onAddSubject} style={{ marginTop: 8 }}>Add Subject</button>
           </div>
         ) : (
           <>
@@ -716,7 +840,7 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
         const progress = computeSubjectProgress(subject.meta?.curriculum, subject.masteryLog);
         const remaining = (subject.meta?.curriculum?.topics || []).reduce((sum, topic) => sum + (topic.subtopics || []).reduce((inner, st) => inner + (subject.masteryLog?.[st.id]?.status === "mastered" ? 0 : st.estimatedMinutes || 10), 0), 0);
         return (
-          <div key={subject.id} className="card" style={{ padding: 18 }}>
+          <div key={subject.id} className="card" data-tour="subjectCard" style={{ padding: 18 }}>
             <button className="btn ghost" onClick={() => onOpenSubject(subject)} style={{ width: "100%", textAlign: "left", padding: 0, minHeight: "auto", color: "var(--text)" }}>
               <h3 className="heading" style={{ margin: "8px 0" }}>{subject.meta?.name || "Untitled subject"}</h3>
               <div className="progress-bar"><span style={{ width: `${progress}%` }} /></div>
@@ -768,6 +892,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewW
                     role="button"
                     tabIndex={0}
                     className="card signature-line"
+                    data-tour="subtopicCard"
                     onClick={() => onStartSubtopic(topic, st)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onStartSubtopic(topic, st); } }}
                     style={{ padding: 18, cursor: "pointer", borderColor, opacity: hasLesson ? 1 : 0.62 }}
@@ -815,12 +940,12 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
         <label className="muted" style={{ fontSize: 13 }}>Subject title</label>
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 18px" }} />
         <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDFs</label>
-        <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
+        <input className="input" data-tour="fileUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
         {notesFiles.length > 0 && <p className="muted">{notesFiles.map((f) => f.name).join(", ")}</p>}
         <label className="muted" style={{ fontSize: 13 }}>Past papers PDFs</label>
         <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setExamFiles, "Past papers")} style={{ margin: "8px 0 10px" }} />
         {examFiles.length > 0 && <p className="muted">{examFiles.map((f) => f.name).join(", ")}</p>}
-        <button className="btn" disabled={loading || !name.trim() || notesFiles.length === 0} onClick={() => onCreate({ name, notesFiles, examFiles })} style={{ width: "100%", marginTop: 16 }}>
+        <button className="btn" data-tour="buildCurriculum" disabled={loading || !name.trim() || notesFiles.length === 0} onClick={() => onCreate({ name, notesFiles, examFiles })} style={{ width: "100%", marginTop: 16 }}>
           {loading ? loadingMsg || "Working..." : "Build Curriculum"}
         </button>
       </div>
@@ -1023,9 +1148,10 @@ function LearnView({
 function StemTutor() {
   const { uid, authLoading, firebaseReady: hasFirebase } = useAuth();
   const { toasts, showToast, removeToast } = useToasts();
-  const [settings, setSettings] = useState({ onboarded: false, geminiApiKey: "", theme: "aurora", studyContext: "", tutorialSeen: false });
+  const [settings, setSettings] = useState({ onboarded: false, geminiApiKey: "", theme: "aurora", studyContext: "", referralSource: "", tutorialSeen: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [tutorialStep, setTutorialStep] = useState(null);
   const [subjects, setSubjects] = useState([]);
   const [modules, setModules] = useState([]);
   const [screen, setScreen] = useState("dashboard");
@@ -1071,12 +1197,19 @@ function StemTutor() {
   useEffect(() => {
     if (!uid) return;
     getSettings(uid).then((saved) => {
-      const next = saved || { onboarded: false, geminiApiKey: sessionStorage.getItem("stem-gemini-api-key") || "", theme: "aurora", studyContext: "", tutorialSeen: false };
-      setSettings({ studyContext: "", tutorialSeen: false, ...next });
+      const next = saved || { onboarded: false, geminiApiKey: sessionStorage.getItem("stem-gemini-api-key") || "", theme: "aurora", studyContext: "", referralSource: "", tutorialSeen: false };
+      setSettings({ studyContext: "", referralSource: "", tutorialSeen: false, ...next });
       document.documentElement.dataset.theme = next.theme || "aurora";
       setSettingsLoaded(true);
     });
   }, [uid]);
+
+  useEffect(() => {
+    if (!uid || !settingsLoaded) return;
+    if (new URLSearchParams(window.location.search).get("devOnboard") === "1") {
+      persistSettings({ onboarded: false, tutorialSeen: false });
+    }
+  }, [uid, settingsLoaded]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme || "aurora";
@@ -1165,6 +1298,70 @@ function StemTutor() {
     sessionStorage.setItem("stem-gemini-api-key", next.geminiApiKey || "");
     await saveSettings(uid, next);
   };
+
+  useEffect(() => {
+    document.querySelectorAll(".tour-active").forEach((node) => node.classList.remove("tour-active"));
+    if (tutorialStep === null) return;
+    const target = TUTORIAL_STEPS[tutorialStep]?.target;
+    if (!target || target === "done") return;
+    const node = document.querySelector(`[data-tour="${target}"]`);
+    if (node) {
+      node.classList.add("tour-active");
+      node.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }
+    return () => {
+      document.querySelectorAll(".tour-active").forEach((activeNode) => activeNode.classList.remove("tour-active"));
+    };
+  }, [tutorialStep, screen, subjects.length, modules.length, selectedSubject?.id]);
+
+  const startTutorial = async () => {
+    setShowSettings(false);
+    setScreen("dashboard");
+    setTutorialStep(0);
+    await persistSettings({ tutorialSeen: false });
+  };
+
+  const finishTutorial = async () => {
+    setTutorialStep(null);
+    setScreen("dashboard");
+    await persistSettings({ tutorialSeen: true });
+  };
+
+  const advanceTutorial = () => {
+    const next = tutorialStep + 1;
+    const target = TUTORIAL_STEPS[next]?.target;
+    if (target === "fileUpload" || target === "buildCurriculum") setScreen("add");
+    if (target === "subjectCard") setScreen("dashboard");
+    if (target === "subtopicCard") {
+      if (subjects[0]) {
+        setSelectedSubject(subjects[0]);
+        setScreen("subject");
+      } else {
+        showToast("Create a subject first, then this step will make more sense.", "info");
+        return;
+      }
+    }
+    if (next >= TUTORIAL_STEPS.length) {
+      finishTutorial();
+      return;
+    }
+    setTutorialStep(next);
+  };
+
+  const goBackTutorial = () => {
+    const prev = Math.max(0, tutorialStep - 1);
+    const target = TUTORIAL_STEPS[prev]?.target;
+    if (target === "fileUpload" || target === "buildCurriculum") setScreen("add");
+    if (target === "addModule" || target === "addSubject" || target === "subjectCard") setScreen("dashboard");
+    setTutorialStep(prev);
+  };
+
+  useEffect(() => {
+    if (settingsLoaded && settings.onboarded && !settings.tutorialSeen && tutorialStep === null && !showSettings) {
+      setScreen("dashboard");
+      setTutorialStep(0);
+    }
+  }, [settingsLoaded, settings.onboarded, settings.tutorialSeen, tutorialStep, showSettings]);
 
   const saveLocalCollections = (nextSubjects, nextModules = modules) => {
     localStorage.setItem("stem-subjects", JSON.stringify(nextSubjects));
@@ -1594,6 +1791,32 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
     showToast("Subject deleted.", "info");
   };
 
+  const deleteMyData = async () => {
+    if (!window.confirm("Delete all subjects, modules, lessons, question banks, and local settings for this account?")) return;
+    if (hasFirebase && db) {
+      await Promise.all(subjects.map((subject) => deleteSubject(subject)));
+      await Promise.all(modules.map((module) => deleteDoc(doc(db, "users", uid, "modules", module.id)).catch(() => {})));
+      await setDoc(doc(db, "users", uid, "settings", "app"), {
+        onboarded: false,
+        tutorialSeen: false,
+        geminiApiKey: "",
+        studyContext: "",
+        referralSource: "",
+        theme: settings.theme || "aurora",
+      });
+    }
+    localStorage.removeItem("stem-subjects");
+    localStorage.removeItem("stem-modules");
+    localStorage.removeItem("stem-settings");
+    sessionStorage.removeItem("stem-gemini-api-key");
+    setSubjects([]);
+    setModules([]);
+    setSelectedSubject(null);
+    setShowSettings(false);
+    await persistSettings({ onboarded: false, tutorialSeen: false, geminiApiKey: "", studyContext: "", referralSource: "" });
+    showToast("Your app data has been reset.", "info");
+  };
+
   const moveSubject = async (subjectId, moduleId) => {
     await saveSubject(subjectId, { meta: { ...subjects.find((subject) => subject.id === subjectId)?.meta, moduleId } });
   };
@@ -1638,12 +1861,13 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
       {!settings.onboarded ? (
         <Onboarding settings={settings} showToast={showToast} onDone={persistSettings} />
       ) : showSettings ? (
-        <Onboarding
+        <SettingsPage
           settings={settings}
           showToast={showToast}
-          editMode
-          onCancel={() => setShowSettings(false)}
-          onDone={async (patch) => { await persistSettings(patch); setShowSettings(false); }}
+          onClose={() => setShowSettings(false)}
+          onSave={persistSettings}
+          onReplayTutorial={startTutorial}
+          onDeleteData={deleteMyData}
         />
       ) : screen === "dashboard" ? (
         <>
@@ -1660,7 +1884,6 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
             onMoveSubject={moveSubject}
             onSettings={() => setShowSettings(true)}
           />
-          {!settings.tutorialSeen && <TutorialOverlay onDone={() => persistSettings({ tutorialSeen: true })} />}
         </>
       ) : screen === "add" ? (
         <AddSubject onBack={() => setScreen("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} />
@@ -1692,6 +1915,15 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
           mistakePattern={mistakePattern}
         />
       ) : null}
+
+      {tutorialStep !== null && settings.onboarded && (
+        <TutorialOverlay
+          step={tutorialStep}
+          onNext={advanceTutorial}
+          onBack={goBackTutorial}
+          onSkip={finishTutorial}
+        />
+      )}
 
       {dashboardModal?.kind === "createModule" && (
         <RenameModal
