@@ -1,7 +1,7 @@
 // Vercel serverless function. Users bring their own Gemini API key.
 // The key is forwarded only for this request and is not stored by the app.
 
-const MODEL = "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 function sleep(ms) {
