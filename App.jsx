@@ -125,6 +125,7 @@ const SOURCE_INDEX_SCHEMA = {
           summary: { type: "STRING" },
           pageHints: { type: "ARRAY", items: { type: "NUMBER" } },
           likelySubtopics: { type: "ARRAY", items: { type: "STRING" } },
+          coverageChecklist: { type: "ARRAY", items: { type: "STRING" } },
           keywords: { type: "ARRAY", items: { type: "STRING" } },
         },
         required: ["name", "summary"],
@@ -154,6 +155,7 @@ const LESSON_SCHEMA_V2 = {
         properties: {
           heading: { type: "STRING" },
           body: { type: "STRING" },
+          key_points: { type: "ARRAY", items: { type: "STRING" } },
           equations: {
             type: "ARRAY",
             items: {
@@ -181,6 +183,7 @@ const LESSON_SCHEMA_V2 = {
     },
     diagram_mermaid: { type: "STRING" },
     common_mistakes: { type: "ARRAY", items: { type: "STRING" } },
+    coverage_checklist: { type: "ARRAY", items: { type: "STRING" } },
     summary: { type: "STRING" },
     source_refs: { type: "ARRAY", items: { type: "STRING" } },
     used_web_search: { type: "BOOLEAN" },
@@ -260,7 +263,7 @@ const GRADING_SCHEMA = {
 
 function buildTeachingPhilosophyPrompt(studyContext) {
   const audience = studyContext && studyContext.trim() ? studyContext.trim() : "college-level student";
-  return `Teach this like the world's best tutor for a ${audience}. Break it into bite-sized sections, each building on the last. Use plain language; if a technical term is unavoidable, define it in plain terms the first time it appears. Every section should connect back to a real-world physical example, not just abstract math. Every full equation must be on its own line, numbered sequentially, with each term explained in words. Include a worked example that mirrors realistic exam difficulty. Avoid unnecessary jargon. Ground everything strictly in the provided lecture notes unless a fact is genuinely missing from them.`;
+  return `Teach this like the world's best tutor for a ${audience}. The lesson should be deep enough to replace a careful read-through of the relevant lecture-note pages for this class. Break it into clear sections, each building on the last, but do not compress away definitions, assumptions, derivations, edge cases, diagrams, examples, or lecturer emphasis that appears in the notes. Use plain language; if a technical term is unavoidable, define it in plain terms the first time it appears. Every section should connect back to a real-world physical example, not just abstract math. Every full equation must be on its own line, numbered sequentially, with each term explained in words. Include a worked example that mirrors realistic exam difficulty. Avoid unnecessary jargon. Ground everything strictly in the provided lecture notes unless a fact is genuinely missing from them.`;
 }
 
 const TUTOR_VOICE_PROMPT = `Write like an experienced, respected tutor — direct and honest, not a cheerleader. When work is genuinely strong, say so specifically and briefly. When it's weak, say exactly what's wrong and why, without padding it in unearned praise first. Never open feedback with generic encouragement ("Great effort!", "Good job!") unless the work specifically earned it. Prioritize being useful to the student's understanding over being nice.`;
@@ -363,7 +366,7 @@ function pickDigestPages(pageIndex = [], maxPages = 28) {
   return [...selected.values()].sort((a, b) => a.pageNum - b.pageNum);
 }
 
-function buildDocumentDigest(file, { maxPages = 28, charsPerPage = 900 } = {}) {
+function buildDocumentDigest(file, { maxPages = 36, charsPerPage = 1200 } = {}) {
   const pages = pickDigestPages(file.pageIndex || [], maxPages);
   const pageDigest = pages
     .map((page) => `Page ${page.pageNum}: ${truncateText(page.text, charsPerPage)}`)
@@ -395,6 +398,7 @@ function compactSourceIndexes(sourceIndexes = []) {
       pageHints: topic.pageHints || [],
       likelySubtopics: topic.likelySubtopics || [],
       keywords: topic.keywords || [],
+      coverageChecklist: topic.coverageChecklist || [],
     })),
   }));
 }
@@ -1148,6 +1152,9 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
         <section className="note-section" key={`${section.heading}-${idx}`}>
           <h2>{section.heading}</h2>
           <MathRenderer text={section.body} paper />
+          {section.key_points?.length > 0 && (
+            <ul>{section.key_points.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          )}
           {(section.equations || []).map((eq) => (
             <div className="equation-row" key={eq.number}>
               <div>
@@ -1172,6 +1179,12 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
         <div className="note-section">
           <h2>Common Mistakes</h2>
           <ul>{lesson.common_mistakes.map((item, i) => <li key={i}>{item}</li>)}</ul>
+        </div>
+      )}
+      {lesson.coverage_checklist?.length > 0 && (
+        <div className="note-section">
+          <h2>Coverage Checklist</h2>
+          <ul>{lesson.coverage_checklist.map((item, i) => <li key={i}>{item}</li>)}</ul>
         </div>
       )}
       {lesson.summary && <p className="paper-muted"><strong>Summary:</strong> {lesson.summary}</p>}
@@ -1595,7 +1608,7 @@ New PDF digest:
 ${digest}
 
 Return:
-1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, useful keywords, and page hints.
+1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, useful keywords, and page hints.
 2. curriculum: the full updated module map.
 
 Rules:
@@ -1603,6 +1616,7 @@ Rules:
 - Add a new topic only when the digest clearly introduces a distinct overarching area.
 - Add or adjust subtopics/classes inside an existing topic when that is enough.
 - Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
+- For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, examples, diagrams, and equations a generated lesson must cover if the notes mention them.
 - Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
 - Do not duplicate existing subtopics under slightly different names.
 - Do not invent content not supported by the existing map, saved indexes, or new digest.`
@@ -1614,7 +1628,7 @@ PDF digest:
 ${digest}
 
 Return:
-1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, useful keywords, and page hints.
+1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, useful keywords, and page hints.
 2. curriculum: a compact module map with this hierarchy only: Module -> topics -> subtopics/classes -> lessons generated later.
 
 Rules:
@@ -1622,6 +1636,7 @@ Rules:
 - Subtopics are class-sized lesson units inside each topic.
 - Minimise the number of subtopics. Prefer fewer, well-scoped classes over lots of tiny fragments.
 - Do not create a subtopic for every heading, equation, or slide. Combine adjacent material when one lesson can teach it coherently.
+- For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, examples, diagrams, and equations a generated lesson must cover if the notes mention them.
 - Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
 - Do not invent topics that are not covered by the digest.
 - Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
@@ -1665,7 +1680,7 @@ Rules:
     const { bytes, pageIndex } = await getLocalSource(source);
     let payloadBytes = bytes;
     if (scoped && pageIndex.length) {
-      const pages = scoreRelevantPages(pageIndex, queryText, 10);
+      const pages = scoreRelevantPages(pageIndex, queryText, 18);
       payloadBytes = await extractPages(bytes, pages);
     }
     if (payloadBytes.byteLength <= MAX_INLINE_DOCUMENT_BYTES) return inlinePdfDocumentPart(payloadBytes);
@@ -1799,7 +1814,18 @@ ${buildTeachingPhilosophyPrompt(settings.studyContext)}
 Saved source-index context for this class:
 ${sourceContext}
 
-Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}". Keep the scope bite-sized: teach this class well, but do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy, and refer to the attached scoped lecture-note pages for source material.
+Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}".
+
+Quality bar:
+- Cover every relevant concept, definition, assumption, derivation, equation, example, diagram idea, and lecturer emphasis found in the attached scoped lecture-note pages for this class.
+- Use the saved source-index context as a coverage plan, but treat the attached pages as the source of truth.
+- Keep the scope limited to this class and its required prerequisites, but do not make the notes short just to be "bite-sized".
+- Prefer 5-9 substantial teaching sections when the notes warrant it.
+- Each section should include key_points listing the concrete ideas it covered.
+- Include coverage_checklist listing the major lecture-note items you covered, phrased as student-checkable bullets.
+- If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
+- If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
+- Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
 
 Before returning, silently self-check every equation, claim, and worked-example step for correctness and remove filler. Return only the requested JSON.`;
       const finalLesson = safeParseJSON(await callGemini({
