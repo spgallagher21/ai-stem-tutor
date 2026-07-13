@@ -276,7 +276,7 @@ const GRADING_SCHEMA = {
 
 function buildTeachingPhilosophyPrompt(studyContext) {
   const audience = studyContext && studyContext.trim() ? studyContext.trim() : "college-level student";
-  return `Teach this like the world's best tutor for a ${audience}. The lesson should be deep enough to replace a careful read-through of the relevant lecture-note pages for this class. Break it into clear sections, each building on the last, but do not compress away definitions, assumptions, derivations, edge cases, diagrams, examples, or lecturer emphasis that appears in the notes. Use plain language; if a technical term is unavoidable, define it in plain terms the first time it appears. Every section should connect back to a real-world physical example, not just abstract math. Every full equation must be on its own line, numbered sequentially, with each term explained in words. Include a worked example that mirrors realistic exam difficulty. Avoid unnecessary jargon. Ground everything strictly in the provided lecture notes unless a fact is genuinely missing from them.`;
+  return `Teach this like the world's best tutor for a ${audience}. The lesson should be deep enough to replace a careful read-through of the relevant lecture-note pages for this class. Break it into clear sections, each building on the last, but do not compress away definitions, assumptions, derivations, edge cases, diagrams, examples, or lecturer emphasis that appears in the notes. Preserve the notes' specific named examples, cases, diseases, drugs, organisms, mechanisms, experiments, clinical signs, authors, laws, and named conditions when they are relevant; these details are often what makes the lesson useful. Use plain language; if a technical term is unavoidable, define it in plain terms the first time it appears. Every section should connect back to a real-world physical, clinical, or domain-specific example from the notes where possible, not just abstract explanation. Every full equation must be on its own line, numbered sequentially, with each term explained in words. Include a worked example that mirrors realistic exam difficulty. Avoid unnecessary jargon. Ground everything strictly in the provided lecture notes unless a fact is genuinely missing from them.`;
 }
 
 const TUTOR_VOICE_PROMPT = `Write like an experienced, respected tutor — direct and honest, not a cheerleader. When work is genuinely strong, say so specifically and briefly. When it's weak, say exactly what's wrong and why, without padding it in unearned praise first. Never open feedback with generic encouragement ("Great effort!", "Good job!") unless the work specifically earned it. Prioritize being useful to the student's understanding over being nice.`;
@@ -429,6 +429,14 @@ function findRelevantSourceContext(subject, topic, subtopic) {
     .filter(Boolean)
     .slice(0, 3);
   return matches.length ? JSON.stringify(matches) : "No saved source-index match found; rely on the scoped PDF pages.";
+}
+
+function isSpecificVisualRef(ref) {
+  const text = `${ref?.caption || ""} ${ref?.reason || ""}`.toLowerCase();
+  if (/slide|page|overview|summary|text|bullet/.test(text) && !/complex|diagram|graph|chart|table|image|scan|micrograph|x-?ray|mri|ct|histology|pathway|flow|free-?body|circuit|structure|anatomy/.test(text)) {
+    return false;
+  }
+  return /complex|diagram|graph|chart|table|image|scan|micrograph|x-?ray|mri|ct|histology|pathway|flow|free-?body|circuit|structure|anatomy|spatial|visual/.test(text);
 }
 
 // --- 3.3 Adaptive question difficulty based on real performance ---
@@ -1163,7 +1171,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
       {lesson.diagram_mermaid && <MermaidRenderer chart={lesson.diagram_mermaid} paper />}
       {lesson.source_visuals?.length > 0 && (
         <div className="note-section">
-          <h2>Lecture Note Visuals</h2>
+          <h2>Source Figures</h2>
           <div style={{ display: "grid", gap: 18 }}>
             {lesson.source_visuals.map((visual, i) => (
               <figure key={`${visual.pageNumber}-${i}`} style={{ margin: 0 }}>
@@ -1648,7 +1656,7 @@ Rules:
 - Add a new topic only when the digest clearly introduces a distinct overarching area.
 - Add or adjust subtopics/classes inside an existing topic when that is enough.
 - Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
-- For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, examples, diagrams, and equations a generated lesson must cover if the notes mention them.
+- For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, named examples, diseases, drugs, organisms, clinical cases, experiments, diagrams, and equations a generated lesson must cover if the notes mention them.
 - Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
 - Do not duplicate existing subtopics under slightly different names.
 - Do not invent content not supported by the existing map, saved indexes, or new digest.`
@@ -1668,7 +1676,7 @@ Rules:
 - Subtopics are class-sized lesson units inside each topic.
 - Minimise the number of subtopics. Prefer fewer, well-scoped classes over lots of tiny fragments.
 - Do not create a subtopic for every heading, equation, or slide. Combine adjacent material when one lesson can teach it coherently.
-- For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, examples, diagrams, and equations a generated lesson must cover if the notes mention them.
+- For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, named examples, diseases, drugs, organisms, clinical cases, experiments, diagrams, and equations a generated lesson must cover if the notes mention them.
 - Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
 - Do not invent topics that are not covered by the digest.
 - Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
@@ -1743,6 +1751,7 @@ Rules:
   const buildSourceVisuals = async (lessonDraft, documentContext) => {
     const refs = (lessonDraft?.visual_refs || [])
       .filter((ref) => Number.isFinite(Number(ref.pageNumber)))
+      .filter(isSpecificVisualRef)
       .slice(0, 2);
     if (!refs.length || !documentContext?.bytes) return [];
     const allowedPages = documentContext.pages?.length ? new Set(documentContext.pages) : null;
@@ -1888,12 +1897,14 @@ Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${t
 
 Quality bar:
 - Cover every relevant concept, definition, assumption, derivation, equation, example, diagram idea, and lecturer emphasis found in the attached scoped lecture-note pages for this class.
+- Preserve and explain specific examples from the notes. In medicine/biology this includes named diseases, symptoms, pathogens, drugs, biomarkers, anatomy, pathways, diagnostic examples, and clinical cases. In other subjects this includes named systems, materials, experiments, case studies, laws, mechanisms, and worked numerical examples.
 - Use the saved source-index context as a coverage plan, but treat the attached pages as the source of truth.
 - Keep the scope limited to this class and its required prerequisites, but do not make the notes short just to be "bite-sized".
 - Prefer 5-9 substantial teaching sections when the notes warrant it.
 - Each section should include key_points listing the concrete ideas it covered.
 - Include coverage_checklist listing the major lecture-note items you covered, phrased as student-checkable bullets.
-- If a diagram, plotted graph, table, annotated slide, free-body diagram, circuit, flow chart, or visual layout in the lecture notes would materially help the student, include up to 2 visual_refs using the original pageNumber from the scoped page list. Use visuals only when they are genuinely useful.
+- Do not use visual_refs for ordinary slides, text-heavy pages, simple bullet lists, or images you can explain clearly in words or recreate as a simple Mermaid diagram. Explain the content in prose first.
+- Include up to 2 visual_refs only for complex source visuals that cannot be recreated well from text, such as dense anatomy/pathology images, medical scans, histology/micrographs, complex pathways, multi-axis graphs, detailed tables, free-body diagrams, circuits, or spatial layouts. The caption must explain why the image matters and the surrounding lesson text must teach the image rather than merely pointing to it.
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
