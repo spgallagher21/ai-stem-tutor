@@ -35,7 +35,7 @@ import {
 const GENERATE_ENDPOINT = "/api/generate";
 const UPLOAD_FILE_ENDPOINT = "/api/upload-file";
 const MAX_ATTEMPTS_STORED = 20;
-const QUESTION_BATCH_SIZE = 3;
+const QUESTION_BATCH_SIZE = 2;
 const APP_NAME = "StudyLoop";
 
 const THEME_CHOICES = [
@@ -428,8 +428,9 @@ function computeAdaptiveDifficulty(baseDifficulty, bank) {
 
 // --- 2.1 / 2.2 Proactive client-side throttling + backoff with jitter ---
 const CALL_WINDOW_MS = 60000;
-const SOFT_CEILING = 8; // conservative soft cap, intentionally under any real per-minute limit
+const SOFT_CEILING = 4; // stay under the free-tier 5 requests/minute limit
 const callTimestamps = [];
+let quotaCooldownUntil = 0;
 
 function pruneCallLog() {
   const cutoff = Date.now() - CALL_WINDOW_MS;
@@ -438,9 +439,27 @@ function pruneCallLog() {
 
 function getThrottleWaitMs() {
   pruneCallLog();
+  const quotaWait = Math.max(0, quotaCooldownUntil - Date.now());
+  if (quotaWait > 0) return quotaWait;
   if (callTimestamps.length < SOFT_CEILING) return 0;
   const oldest = callTimestamps[0];
   return Math.max(0, CALL_WINDOW_MS - (Date.now() - oldest) + 250);
+}
+
+function extractRetrySeconds(message) {
+  const retryMatch = String(message || "").match(/retry\s+in\s+([\d.]+)/i);
+  return retryMatch ? Math.ceil(Number(retryMatch[1])) : 60;
+}
+
+function isQuotaError(message, status) {
+  return status === 429 || /quota|rate.?limit|generate_content_free/i.test(String(message || ""));
+}
+
+function friendlyGeminiError(message, status, retryAfterSeconds) {
+  if (!isQuotaError(message, status)) return message;
+  const retrySeconds = retryAfterSeconds || extractRetrySeconds(message);
+  quotaCooldownUntil = Date.now() + retrySeconds * 1000;
+  return `Gemini free-tier quota reached. Wait about ${retrySeconds}s, then try again. To avoid this, upload one topic at a time and let each AI step finish before starting another.`;
 }
 
 function usageStorageKey() {
@@ -471,7 +490,7 @@ function recordCall() {
   incrementUsageToday();
 }
 
-async function callGemini({ contents, generationConfig, apiKey, documentPart, tools }, { retries = 2, onStatus } = {}) {
+async function callGemini({ contents, generationConfig, apiKey, documentPart, tools }, { retries = 0, onStatus } = {}) {
   const trimmedApiKey = (apiKey || "").trim();
   if (!trimmedApiKey) throw new Error("Enter your Gemini API key before using the tutor.");
 
@@ -498,7 +517,8 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
       const data = await res.json();
       if (!res.ok || data.error) {
         const msg = data.error || `Request failed (status ${res.status}).`;
-        if ((res.status === 429 || res.status >= 500) && attempt < retries) {
+        if (isQuotaError(msg, res.status)) throw new Error(friendlyGeminiError(msg, res.status, data.retryAfterSeconds));
+        if (res.status >= 500 && attempt < retries) {
           const backoff = Math.min(8000, 700 * 2 ** attempt) + Math.random() * 400;
           onStatus?.("The AI is recharging for a moment...");
           await sleep(backoff);
@@ -709,7 +729,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
           <>
             <h1 className="heading" style={{ marginTop: 0 }}>{APP_NAME}</h1>
             <p className="muted">Create a module, upload its lecture PDFs, and let {APP_NAME} organise them into topics, bite-sized classes, and lessons.</p>
-            <p className="muted">Connecting your own free Gemini key keeps the app free to use, while {APP_NAME} adds the prompting, review passes, and practice logic that make the output feel closer to a paid tutoring tool.</p>
+            <p className="muted">Connecting your own free Gemini key keeps the app free to use, while {APP_NAME} adds source mapping, focused tutoring prompts, and practice logic around each AI call.</p>
             <p className="muted">Your notes, modules, and progress stay under your account and are not shared with other users.</p>
           </>
         )}
@@ -1749,22 +1769,7 @@ Rules:
 
   const ensureExamPlan = async (subject) => {
     if (subject.meta?.examPlan) return subject.meta.examPlan;
-    if (!subject.meta?.examFiles?.length) return DEFAULT_EXAM_PLAN;
-    setLoadingMsg("Analyzing your past papers' style...");
-    try {
-      const documentPart = await getDocumentPart(subject, { scoped: false, sourceKind: "exam" });
-      const res = await callGemini({
-        apiKey: settings.geminiApiKey,
-        contents: [{ role: "user", parts: [{ text: `Analyze the attached past exam paper for the module "${subject.meta.name}". Identify the distribution of question types, typical marks, and style conventions.` }] }],
-        documentPart,
-        generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: EXAM_PLAN_SCHEMA },
-      }, { onStatus: setLoadingMsg });
-      const plan = safeParseJSON(res)?.question_types?.length ? safeParseJSON(res) : DEFAULT_EXAM_PLAN;
-      await saveSubject(subject.id, { meta: { ...subject.meta, examPlan: plan } });
-      return plan;
-    } catch (err) {
-      return DEFAULT_EXAM_PLAN;
-    }
+    return DEFAULT_EXAM_PLAN;
   };
 
   const generateLesson = async (subject, topic, subtopic, force = false) => {
@@ -1794,54 +1799,15 @@ ${buildTeachingPhilosophyPrompt(settings.studyContext)}
 Saved source-index context for this class:
 ${sourceContext}
 
-Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}". Keep the scope bite-sized: teach this class well, but do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy, and refer to the attached scoped lecture-note pages for source material. Return only the requested JSON.`;
-      let draft = safeParseJSON(await callGemini({
+Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${topic.name}" for the module "${subject.meta.name}". Keep the scope bite-sized: teach this class well, but do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy, and refer to the attached scoped lecture-note pages for source material.
+
+Before returning, silently self-check every equation, claim, and worked-example step for correctness and remove filler. Return only the requested JSON.`;
+      const finalLesson = safeParseJSON(await callGemini({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: draftPrompt }] }],
         documentPart,
         generationConfig: { temperature: 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
       }, { onStatus: setLoadingMsg }));
-
-      if (draft.needs_external_info && draft.external_info_gaps?.length) {
-        setLoadingMsg("Looking up a couple of details...");
-        try {
-          const gapPrompt = `Fill only these missing details for the lesson on "${subtopic.name}". Keep additions concise, cite sources in source_refs with a "web:" prefix, and preserve the JSON schema.
-
-Gaps:
-${draft.external_info_gaps.join("\n")}
-
-Current draft:
-${JSON.stringify(draft)}`;
-          draft = safeParseJSON(await callGemini({
-            apiKey: settings.geminiApiKey,
-            contents: [{ role: "user", parts: [{ text: gapPrompt }] }],
-            tools: [{ google_search: {} }],
-            generationConfig: { temperature: 0.2, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
-          }, { onStatus: setLoadingMsg }));
-        } catch (err) {
-          draft.used_web_search = false;
-        }
-      }
-
-      setLoadingMsg("Checking it over...");
-      let finalLesson = draft;
-      try {
-        const critique = safeParseJSON(await callGemini({
-          apiKey: settings.geminiApiKey,
-          contents: [{ role: "user", parts: [{ text: `You are a professor teaching the module ${subject.meta.name}, fact-checking a junior tutor's class-sized lesson before it reaches a student. Check every equation, every claim, and the worked example for correctness. Also flag any language that reads as filler, generic encouragement, or unearned praise rather than substantive feedback. Be specific and actionable.\n\nLesson:\n${JSON.stringify(draft)}` }] }],
-          generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: REVIEW_SCHEMA },
-        }, { onStatus: setLoadingMsg }));
-        if (critique.verdict === "needs_revision") {
-          setLoadingMsg("Polishing the final version...");
-          finalLesson = safeParseJSON(await callGemini({
-            apiKey: settings.geminiApiKey,
-            contents: [{ role: "user", parts: [{ text: `Revise this lesson using the professor critique. Preserve the sectioned JSON schema.\n\nCritique:\n${JSON.stringify(critique)}\n\nDraft:\n${JSON.stringify(draft)}` }] }],
-            generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
-          }, { onStatus: setLoadingMsg }));
-        }
-      } catch (err) {
-        finalLesson = { ...draft, _reviewSkipped: true };
-      }
 
       const payload = { ...finalLesson, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);

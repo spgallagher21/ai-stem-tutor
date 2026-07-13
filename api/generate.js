@@ -8,6 +8,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function extractRetryAfterSeconds(data) {
+  const retryInfo = (data?.error?.details || []).find((detail) => detail?.["@type"]?.includes("RetryInfo"));
+  const retryDelay = retryInfo?.retryDelay;
+  if (typeof retryDelay === "string") return Math.ceil(Number(retryDelay.replace("s", "")));
+  const messageMatch = String(data?.error?.message || "").match(/retry\s+in\s+([\d.]+)/i);
+  return messageMatch ? Math.ceil(Number(messageMatch[1])) : null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -68,7 +76,11 @@ export default async function handler(req, res) {
 
       if (!r.ok) {
         lastErrMessage = data?.error?.message || `Gemini error (status ${r.status})`;
-        const retryable = r.status === 429 || r.status >= 500;
+        const retryAfterSeconds = extractRetryAfterSeconds(data);
+        const retryable = r.status >= 500;
+        if (r.status === 429) {
+          return res.status(r.status).json({ error: lastErrMessage, retryAfterSeconds });
+        }
         if (retryable && attempt < maxAttempts) {
           await sleep(attempt * 700);
           continue;
