@@ -1246,7 +1246,7 @@ function LearnView({
           viewingBankQuestion ? (
             <div className="card" style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
               <button className="btn ghost" onClick={onCloseBankQuestion} style={{ marginBottom: 14 }}>Back to list</button>
-              <strong style={{ color: "var(--accent-1)" }}>{QUESTION_TYPE_LABELS[viewingBankQuestion.type] || viewingBankQuestion.type}</strong>
+              <strong style={{ color: "var(--accent-text)" }}>{QUESTION_TYPE_LABELS[viewingBankQuestion.type] || viewingBankQuestion.type}</strong>
               <h2><MathRenderer text={viewingBankQuestion.question} /></h2>
               {viewingBankQuestion.attempts?.[0] ? (
                 <>
@@ -1266,7 +1266,7 @@ function LearnView({
         ) : q ? (
           <div className="card" style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-              <strong style={{ color: "var(--accent-1)" }}>{QUESTION_TYPE_LABELS[q.type] || q.type}</strong>
+              <strong style={{ color: "var(--accent-text)" }}>{QUESTION_TYPE_LABELS[q.type] || q.type}</strong>
               <span className="muted mono">{q.marks ? `${q.marks} marks` : ""}</span>
             </div>
             <h2><MathRenderer text={q.question} /></h2>
@@ -2130,7 +2130,11 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
           <button key={toast.id} className={`toast ${toast.variant}`} onClick={() => removeToast(toast.id)}>{toast.message}</button>
         ))}
       </div>
-      {loading && <div className="loading-overlay"><div className="card loading-message">{loadingMsg}</div></div>}
+      {loading && (
+        <div className="loading-overlay" role="status" aria-live="polite" aria-busy="true">
+          <div className="card loading-message">{loadingMsg || "Working..."}</div>
+        </div>
+      )}
 
       {!settings.onboarded ? (
         <Onboarding settings={settings} showToast={showToast} onDone={persistSettings} />
