@@ -1169,25 +1169,6 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
         </div>
       )}
       {lesson.diagram_mermaid && <MermaidRenderer chart={lesson.diagram_mermaid} paper />}
-      {lesson.source_visuals?.length > 0 && (
-        <div className="note-section">
-          <h2>Source Figures</h2>
-          <div style={{ display: "grid", gap: 18 }}>
-            {lesson.source_visuals.map((visual, i) => (
-              <figure key={`${visual.pageNumber}-${i}`} style={{ margin: 0 }}>
-                <img
-                  src={visual.imageDataUrl}
-                  alt={visual.caption || `Lecture notes page ${visual.pageNumber}`}
-                  style={{ width: "100%", border: "1px solid #d8d1c5", borderRadius: 6 }}
-                />
-                <figcaption className="paper-muted" style={{ marginTop: 8 }}>
-                  <strong>Page {visual.pageNumber}:</strong> {visual.caption}
-                </figcaption>
-              </figure>
-            ))}
-          </div>
-        </div>
-      )}
       {(lesson.sections || []).map((section, idx) => (
         <section className="note-section" key={`${section.heading}-${idx}`}>
           <h2>{section.heading}</h2>
@@ -1219,6 +1200,26 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
         <div className="note-section">
           <h2>Common Mistakes</h2>
           <ul>{lesson.common_mistakes.map((item, i) => <li key={i}>{item}</li>)}</ul>
+        </div>
+      )}
+      {lesson.source_visuals?.length > 0 && (
+        <div className="note-section">
+          <h2>Source Figures</h2>
+          <p className="paper-muted">These figures add visual detail from the lecture notes. The written lesson above should still stand on its own.</p>
+          <div style={{ display: "grid", gap: 18 }}>
+            {lesson.source_visuals.map((visual, i) => (
+              <figure key={`${visual.pageNumber}-${i}`} style={{ margin: 0 }}>
+                <img
+                  src={visual.imageDataUrl}
+                  alt={visual.caption || `Lecture notes page ${visual.pageNumber}`}
+                  style={{ width: "100%", border: "1px solid #d8d1c5", borderRadius: 6 }}
+                />
+                <figcaption className="paper-muted" style={{ marginTop: 8 }}>
+                  <strong>Page {visual.pageNumber}:</strong> {visual.caption}
+                </figcaption>
+              </figure>
+            ))}
+          </div>
         </div>
       )}
       {lesson.coverage_checklist?.length > 0 && (
@@ -1752,7 +1753,7 @@ Rules:
     const refs = (lessonDraft?.visual_refs || [])
       .filter((ref) => Number.isFinite(Number(ref.pageNumber)))
       .filter(isSpecificVisualRef)
-      .slice(0, 2);
+      .slice(0, 1);
     if (!refs.length || !documentContext?.bytes) return [];
     const allowedPages = documentContext.pages?.length ? new Set(documentContext.pages) : null;
     const visuals = [];
@@ -1904,7 +1905,9 @@ Quality bar:
 - Each section should include key_points listing the concrete ideas it covered.
 - Include coverage_checklist listing the major lecture-note items you covered, phrased as student-checkable bullets.
 - Do not use visual_refs for ordinary slides, text-heavy pages, simple bullet lists, or images you can explain clearly in words or recreate as a simple Mermaid diagram. Explain the content in prose first.
-- Include up to 2 visual_refs only for complex source visuals that cannot be recreated well from text, such as dense anatomy/pathology images, medical scans, histology/micrographs, complex pathways, multi-axis graphs, detailed tables, free-body diagrams, circuits, or spatial layouts. The caption must explain why the image matters and the surrounding lesson text must teach the image rather than merely pointing to it.
+- The written lesson must pass this image removal test: if every visual_ref and source figure were deleted, a student should still understand every examinable concept, example, disease/case, mechanism, equation, and derivation from the relevant notes.
+- Include up to 1 visual_ref, or 2 only when genuinely necessary, for complex source visuals that add information impossible or impractical to convey fully in text, such as dense anatomy/pathology images, medical scans, histology/micrographs, complex pathways, multi-axis graphs, detailed tables, free-body diagrams, circuits, or spatial layouts.
+- Never replace explanation with a visual_ref. The surrounding section must already explain what the figure shows, why it matters, and what the student should learn from it. The caption should only add orientation, not carry the core teaching.
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
