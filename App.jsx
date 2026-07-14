@@ -335,13 +335,32 @@ function sleep(ms) {
 }
 
 function safeParseJSON(rawStr) {
-  try {
-    return JSON.parse(rawStr);
-  } catch (e) {
-    const jsonMatch = rawStr.match(/\{[\s\S]*\}/);
-    if (jsonMatch) return JSON.parse(jsonMatch[0]);
-    throw new Error("The AI returned data in an unexpected format. Please try again.");
+  const raw = String(rawStr || "").trim();
+  const candidates = [raw];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  const firstObject = raw.indexOf("{");
+  const lastObject = raw.lastIndexOf("}");
+  if (firstObject >= 0 && lastObject > firstObject) candidates.push(raw.slice(firstObject, lastObject + 1));
+  const firstArray = raw.indexOf("[");
+  const lastArray = raw.lastIndexOf("]");
+  if (firstArray >= 0 && lastArray > firstArray) candidates.push(raw.slice(firstArray, lastArray + 1));
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (e) {
+      // Try the next candidate.
+    }
   }
+
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    // Fall through to the clearer user-facing error below.
+  }
+  throw new Error("The AI returned data in an unexpected format. Please try again.");
 }
 
 function assignIds(curriculum) {
@@ -838,6 +857,30 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
     }
   }
   throw lastErr;
+}
+
+async function callGeminiJSON(request, { onStatus, label = "AI response" } = {}) {
+  const raw = await callGemini(request, { onStatus });
+  try {
+    return safeParseJSON(raw);
+  } catch (parseErr) {
+    onStatus?.("Repairing the AI response format...");
+    const repaired = await callGemini({
+      apiKey: request.apiKey,
+      contents: [{
+        role: "user",
+        parts: [{
+          text: `Convert the following ${label} into valid JSON only. Do not add commentary, Markdown, code fences, or explanations. Preserve all useful content and match the originally requested schema as closely as possible.\n\n${raw}`,
+        }],
+      }],
+      generationConfig: {
+        ...(request.generationConfig || {}),
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
+    }, { onStatus });
+    return safeParseJSON(repaired);
+  }
 }
 
 function useToasts() {
@@ -2062,11 +2105,11 @@ Rules:
 - Do not invent topics that are not covered by the digest.
 - Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
 
-    const result = safeParseJSON(await callGemini({
+    const result = await callGeminiJSON({
       apiKey: settings.geminiApiKey,
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: { temperature: hasExistingMap ? 0.15 : 0.2, responseMimeType: "application/json", responseSchema: MODULE_INDEX_SCHEMA },
-    }, { onStatus: setLoadingMsg }));
+    }, { onStatus: setLoadingMsg, label: "module organisation response" });
     return {
       sourceIndex: result.sourceIndex,
       curriculum: hasExistingMap ? preserveCurriculumIds(existingCurriculum, result.curriculum) : assignIds(result.curriculum),
@@ -2098,11 +2141,11 @@ Rules:
 
 Return only topicGroups.`;
 
-    const result = safeParseJSON(await callGemini({
+    const result = await callGeminiJSON({
       apiKey: settings.geminiApiKey,
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: TOPIC_GROUPS_SCHEMA },
-    }, { onStatus: setLoadingMsg }));
+    }, { onStatus: setLoadingMsg, label: "topic grouping response" });
 
     return preserveCurriculumIds(curriculum, { ...curriculum, topicGroups: result.topicGroups || [] });
   };
@@ -2205,11 +2248,11 @@ Candidate images:
 ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ page, reason, description, modelUsed })))}`;
 
     try {
-      const decision = safeParseJSON(await callGemini({
+      const decision = await callGeminiJSON({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: decisionPrompt }] }],
         generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: SUPPLEMENTARY_IMAGE_SCHEMA },
-      }, { onStatus: setLoadingMsg }));
+      }, { onStatus: setLoadingMsg, label: "supplementary image decision" });
       const imageByPage = new Map(described.map((item) => [item.page, item]));
       const selectedImages = (decision.supplementary_images || [])
         .filter((item) => item.include && imageByPage.has(Math.round(Number(item.page))))
@@ -2391,12 +2434,12 @@ Quality bar:
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
 
 Before returning, silently self-check every equation, claim, and worked-example step for correctness and remove filler. Return only the requested JSON.`;
-      const finalLesson = safeParseJSON(await callGemini({
+      const finalLesson = await callGeminiJSON({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: draftPrompt }] }],
         documentPart: documentContext?.documentPart,
         generationConfig: { temperature: 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
-      }, { onStatus: setLoadingMsg }));
+      }, { onStatus: setLoadingMsg, label: "lesson draft response" });
 
       const supplementary_images = await buildSupplementaryImages(finalLesson, documentContext, subtopic);
       const payload = { ...finalLesson, supplementary_images, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
@@ -2467,12 +2510,12 @@ Difficulty: ${adaptiveDifficulty}/5.
 Marks: around ${followUpType.avg_marks || 5}.
 
 For non-multiple-choice questions, leave options empty and correct_option empty. Refer to the attached lecture notes document for source material. Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in the requested order.`;
-      const parsed = safeParseJSON(await callGemini({
+      const parsed = await callGeminiJSON({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         documentPart,
         generationConfig: { temperature: 0.4, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
-      }, { onStatus: setLoadingMsg }));
+      }, { onStatus: setLoadingMsg, label: "practice question response" });
       const newQuestions = normalizeQuestionBatch(parsed.questions, { expectedCount: QUESTION_BATCH_SIZE })
         .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now() }));
       if (!newQuestions.length) throw new Error("The AI didn't return any questions. Try again.");
@@ -2548,12 +2591,12 @@ ${JSON.stringify(plan)}
 
 For multiple-choice questions, include exactly 4 plausible options and put the exact correct option text in correct_option. For written questions, leave options empty and correct_option empty. Return exactly ${TOPIC_EXAM_QUESTION_COUNT} questions under a "questions" array.`;
 
-      const parsed = safeParseJSON(await callGemini({
+      const parsed = await callGeminiJSON({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         documentPart,
         generationConfig: { temperature: 0.35, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
-      }, { onStatus: setLoadingMsg }));
+      }, { onStatus: setLoadingMsg, label: "topic exam response" });
 
       const questions = normalizeQuestionBatch(parsed.questions, { expectedCount: TOPIC_EXAM_QUESTION_COUNT }).map((qItem, index) => ({
         ...qItem,
@@ -2612,11 +2655,11 @@ MODEL ANSWER: ${q.modelAnswer}
 STUDENT ANSWER: ${studentAnswer}
 
 Give partial credit where deserved. Identify misconceptions and classify the mistake as concept_gap, careless_error, misread_question, or none.`;
-        parsed = safeParseJSON(await callGemini({
+        parsed = await callGeminiJSON({
           apiKey: settings.geminiApiKey,
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: GRADING_SCHEMA },
-        }, { onStatus: setLoadingMsg }));
+        }, { onStatus: setLoadingMsg, label: "topic exam grading response" });
       }
 
       const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
@@ -2699,11 +2742,11 @@ MODEL ANSWER: ${q.modelAnswer}
 STUDENT ANSWER: ${studentAnswer}
 
 Give partial credit where deserved. Identify misconceptions and classify the mistake as concept_gap, careless_error, misread_question, or none.`;
-        parsed = safeParseJSON(await callGemini({
+        parsed = await callGeminiJSON({
           apiKey: settings.geminiApiKey,
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: GRADING_SCHEMA },
-        }, { onStatus: setLoadingMsg }));
+        }, { onStatus: setLoadingMsg, label: "practice grading response" });
       }
       const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
       const key = lessonKey(selectedSubject.id, active.subtopic.id);
