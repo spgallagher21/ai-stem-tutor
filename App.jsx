@@ -161,6 +161,14 @@ const MODULE_INDEX_SCHEMA = {
   required: ["sourceIndex", "curriculum"],
 };
 
+const TOPIC_GROUPS_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    topicGroups: CURRICULUM_SCHEMA.properties.topicGroups,
+  },
+  required: ["topicGroups"],
+};
+
 const VISUAL_PAGE_TERMS = [
   "figure", "fig.", "diagram", "graph", "chart", "plot", "table", "flowchart", "schematic",
   "image", "scan", "x-ray", "xray", "mri", "ct", "ultrasound", "histology", "micrograph",
@@ -521,8 +529,12 @@ function pickDigestPages(pageIndex = [], maxPages = 28) {
   return [...selected.values()].sort((a, b) => a.pageNum - b.pageNum);
 }
 
-function buildDocumentDigest(file, { maxPages = 36, charsPerPage = 1200 } = {}) {
+function buildDocumentDigest(file, { maxPages = 36, charsPerPage = 1200, maxQuickPages = 80, quickCharsPerPage = 220 } = {}) {
   const pages = pickDigestPages(file.pageIndex || [], maxPages);
+  const quickMap = (file.pageIndex || [])
+    .slice(0, maxQuickPages)
+    .map((page) => `Page ${page.pageNum}: ${truncateText(page.text, quickCharsPerPage)}`)
+    .join("\n");
   const pageDigest = pages
     .map((page) => `Page ${page.pageNum}: ${truncateText(page.text, charsPerPage)}`)
     .join("\n\n");
@@ -530,6 +542,10 @@ function buildDocumentDigest(file, { maxPages = 36, charsPerPage = 1200 } = {}) 
 Pages in PDF: ${file.pageIndex?.length || "unknown"}
 Sampled pages: ${pages.map((page) => page.pageNum).join(", ") || "none"}
 
+Quick page map:
+${quickMap || "No page-level text map was extracted."}
+
+Detailed sampled pages:
 ${pageDigest || "No selectable text was extracted from this PDF."}`;
 }
 
@@ -1310,8 +1326,8 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartTo
           <p className="muted">Upload more lecture notes or past papers here. The module will preserve existing topics where possible, add new topics when the notes warrant it, and keep classes bite-sized.</p>
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
             <div>
-              <label className="muted" style={{ fontSize: 13 }}>More lecture notes, one topic at a time</label>
-              <input className="input" type="file" accept=".pdf" onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ marginTop: 8 }} />
+              <label className="muted" style={{ fontSize: 13 }}>More lecture notes</label>
+              <input className="input" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ marginTop: 8 }} />
               {notesFiles.length > 0 && <p className="muted">{notesFiles.map((f) => f.name).join(", ")}</p>}
             </div>
             <div>
@@ -1338,19 +1354,19 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartTo
         {topicGroups.map((group) => {
           const examScope = getExamScopeFromGroup(group);
           return (
-          <section key={group.id || group.name} style={{ marginBottom: 34 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+          <section key={group.id || group.name} className="topic-group-block">
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 18, flexWrap: "wrap" }}>
               <div>
-                <h2 className="heading" style={{ fontSize: 18, margin: 0 }}>{group.name}</h2>
+                <h2 className="heading" style={{ fontSize: 20, margin: 0 }}>{group.name}</h2>
                 {group.summary && <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>{group.summary}</p>}
               </div>
-              <button className="btn secondary" onClick={() => onStartTopicExam(examScope)} disabled={loading}>
-                Group Exam
+              <button className="btn" onClick={() => onStartTopicExam(examScope)} disabled={loading}>
+                Topic Exam
               </button>
             </div>
             {(group.topics || []).map((topic) => (
               <div key={topic.id} style={{ marginBottom: 22 }}>
-                {group.topics.length > 1 && <h3 className="heading" style={{ fontSize: 15, margin: "0 0 10px" }}>{topic.name}</h3>}
+                <h3 className="heading" style={{ fontSize: 15, margin: "0 0 10px" }}>{topic.name}</h3>
                 <div className="grid subject-grid">
                   {(topic.subtopics || []).map((st) => {
                     const entry = masteryLog[st.id];
@@ -1414,8 +1430,8 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
         <p className="muted">PDFs are stored on this device. Your module, lessons, questions, and progress can sync through Firestore, but source PDFs must be re-uploaded on a different device before regenerating content there.</p>
         <label className="muted" style={{ fontSize: 13 }}>Module title</label>
         <input className="input" data-tour="moduleName" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 18px" }} />
-        <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDF for one topic</label>
-        <input className="input" data-tour="fileUpload" type="file" accept=".pdf" onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
+        <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDFs</label>
+        <input className="input" data-tour="fileUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
         {notesFiles.length > 0 && <p className="muted">{notesFiles.map((f) => f.name).join(", ")}</p>}
         <label className="muted" style={{ fontSize: 13 }}>Past papers PDFs</label>
         <input className="input" data-tour="examUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setExamFiles, "Past papers")} style={{ margin: "8px 0 10px" }} />
@@ -1662,7 +1678,7 @@ function TopicExamView({
         <button className="btn ghost" onClick={onBack}>Back to module</button>
         <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", marginBottom: 22, flexWrap: "wrap" }}>
           <div>
-            <h1 className="heading" style={{ marginBottom: 6 }}>{topic.name} Group Exam</h1>
+            <h1 className="heading" style={{ marginBottom: 6 }}>{topic.name} Topic Exam</h1>
             <p className="muted" style={{ margin: 0 }}>{subject.meta?.name} - {attempted}/{exam?.questions?.length || 0} attempted</p>
           </div>
           <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Refresh exam</button>
@@ -2010,8 +2026,10 @@ Rules:
 - Preserve existing broad topics when the new notes fit them.
 - Add a new topic only when the digest clearly introduces a distinct overarching area.
 - Add or adjust subtopics/classes inside an existing topic when that is enough.
-- Create or update topicGroups as broad exam units that contain related topics. A topicGroup should be broader than a single niche topic when the module has several related narrow topics.
-- Prefer 2-6 topicGroups for a normal module. Do not create one group per tiny topic unless there is genuinely nothing related to group it with.
+- Create or update topicGroups as broad umbrella sections that contain related topics. These are the visible containers students use to understand the module and the scope used for group exams.
+- If the module has several narrow related topics, they must live under one broader topicGroup. Do not mirror every topic as its own topicGroup.
+- Prefer 2-6 topicGroups for a normal module. Single-topic groups are allowed only when that topic is genuinely unrelated to every other topic currently in the module.
+- Example: topics such as "DAQ system components", "Analogue, digital and binary signals", "Measurement system design", "Functional elements", and "Electrical signal advantages" should all live inside one topicGroup named like "Signal Conditioning & Analysis and Data Acquisition (SCA & DAQ)".
 - Each topicGroup must list existing topic names in topicNames exactly as they appear in curriculum.topics.
 - Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
 - For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, named examples, diseases, drugs, organisms, clinical cases, experiments, diagrams, and equations a generated lesson must cover if the notes mention them.
@@ -2030,8 +2048,10 @@ Return:
 2. curriculum: a compact module map with this hierarchy: Module -> topicGroups -> topics -> subtopics/classes -> lessons generated later.
 
 Rules:
-- topicGroups are broad exam units used for group-level tests. They should contain related topics wherever possible.
+- topicGroups are broad umbrella sections used for module organisation and group-level tests. They should contain related topics wherever possible.
+- If the digest contains several narrow related topics, they must live under one broader topicGroup. Do not mirror every topic as its own topicGroup.
 - Prefer 2-6 topicGroups for a normal module. Avoid one group per tiny topic unless no reasonable grouping exists yet.
+- Example: topics such as "DAQ system components", "Analogue, digital and binary signals", "Measurement system design", "Functional elements", and "Electrical signal advantages" should all live inside one topicGroup named like "Signal Conditioning & Analysis and Data Acquisition (SCA & DAQ)".
 - Each topicGroup must list topicNames that exactly match names in curriculum.topics.
 - Topics must be broad lecture-note sections or recurring blocks the digest clearly supports.
 - Subtopics are class-sized lesson units inside each topic.
@@ -2051,6 +2071,40 @@ Rules:
       sourceIndex: result.sourceIndex,
       curriculum: hasExistingMap ? preserveCurriculumIds(existingCurriculum, result.curriculum) : assignIds(result.curriculum),
     };
+  };
+
+  const regroupCurriculumTopicGroups = async ({ moduleName, curriculum, sourceIndexes }) => {
+    if (!curriculum?.topics?.length) return curriculum;
+    setLoadingMsg("Creating broad topic groups...");
+    const prompt = `You are organising the college module "${moduleName}" into broad visible topic groups.
+
+The topics/classes already exist. Do not rename, remove, duplicate, split, or merge topics or subtopics. Your only job is to create topicGroups: broad umbrella sections that contain related topics and define the scope for group exams.
+
+Current curriculum:
+${JSON.stringify(curriculum)}
+
+Saved source indexes from all uploaded lecture-note PDFs:
+${JSON.stringify(compactSourceIndexes(sourceIndexes))}
+
+Rules:
+- topicGroups are visible highlighted containers in the student UI. Topics live inside them.
+- Group related narrow topics together whenever the lecture-note/source-index context shows they belong to the same broad area.
+- Do not create one group per topic unless the module currently has only one topic or a topic is genuinely unrelated to all others.
+- Prefer 2-6 broad topicGroups for a normal module.
+- Each topicGroup must list topicNames exactly as they appear in curriculum.topics.
+- Every topic must appear in exactly one topicGroup.
+- Use concise, course-like group names that a lecturer might use for a lecture block.
+- Example: topics such as "DAQ system components", "Analogue, digital and binary signals", "Measurement system design", "Functional elements", and "Electrical signal advantages" should all live inside one topicGroup named like "Signal Conditioning & Analysis and Data Acquisition (SCA & DAQ)".
+
+Return only topicGroups.`;
+
+    const result = safeParseJSON(await callGemini({
+      apiKey: settings.geminiApiKey,
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: TOPIC_GROUPS_SCHEMA },
+    }, { onStatus: setLoadingMsg }));
+
+    return preserveCurriculumIds(curriculum, { ...curriculum, topicGroups: result.topicGroups || [] });
   };
 
   const getLocalSource = async (source) => {
@@ -2182,13 +2236,28 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
     setLoading(true);
     setLoadingMsg("Indexing the PDF and organising the module...");
     try {
-      const indexed = await createModuleIndexFromFile({ moduleName: name, file: notesFiles[0] });
-      const curriculum = indexed.curriculum;
+      let curriculum = null;
+      const sourceIndexEntries = [];
+      for (const notesFile of notesFiles) {
+        setLoadingMsg(`Indexing ${notesFile.name}...`);
+        const indexed = await createModuleIndexFromFile({
+          moduleName: name,
+          file: notesFile,
+          existingCurriculum: curriculum,
+          existingSourceIndexes: sourceIndexEntries,
+        });
+        curriculum = indexed.curriculum;
+        sourceIndexEntries.push({ pendingName: notesFile.name, index: indexed.sourceIndex });
+      }
       if (!curriculum.topics?.length) throw new Error("The AI returned an empty curriculum. Try more complete lecture notes.");
 
       const subjectId = hasFirebase && db ? doc(collection(db, "users", uid, "subjects")).id : crypto.randomUUID();
       const sourceFiles = await storeSourceFiles(subjectId, notesFiles, "notes");
-      const sourceIndexes = sourceFiles[0] ? [{ fileName: sourceFiles[0].name, localPdfId: sourceFiles[0].localPdfId, index: indexed.sourceIndex }] : [];
+      const sourceIndexes = sourceIndexEntries.map((entry) => {
+        const fileRecord = sourceFiles.find((source) => source.name === entry.pendingName);
+        return { fileName: fileRecord?.name || entry.pendingName, localPdfId: fileRecord?.localPdfId || null, index: entry.index };
+      });
+      curriculum = await regroupCurriculumTopicGroups({ moduleName: name, curriculum, sourceIndexes });
       const storedExamFiles = await storeSourceFiles(subjectId, examFiles, "exam");
       const subjectDoc = {
         id: subjectId,
@@ -2221,16 +2290,17 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
       let newSourceIndexEntries = [];
 
       if (notesFiles.length) {
-        const notesFile = notesFiles[0];
-        setLoadingMsg(`Indexing ${notesFile.name}...`);
-        const indexed = await createModuleIndexFromFile({
-          moduleName: subject.meta.name,
-          file: notesFile,
-          existingCurriculum: curriculum,
-          existingSourceIndexes: subject.meta?.sourceIndexes || [],
-        });
-        curriculum = indexed.curriculum;
-        newSourceIndexEntries = [{ pendingName: notesFile.name, index: indexed.sourceIndex }];
+        for (const notesFile of notesFiles) {
+          setLoadingMsg(`Indexing ${notesFile.name}...`);
+          const indexed = await createModuleIndexFromFile({
+            moduleName: subject.meta.name,
+            file: notesFile,
+            existingCurriculum: curriculum,
+            existingSourceIndexes: [...(subject.meta?.sourceIndexes || []), ...newSourceIndexEntries],
+          });
+          curriculum = indexed.curriculum;
+          newSourceIndexEntries.push({ pendingName: notesFile.name, index: indexed.sourceIndex });
+        }
       }
 
       const newSourceFiles = await storeSourceFiles(subject.id, notesFiles, "notes");
@@ -2239,11 +2309,15 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
         const fileRecord = newSourceFiles.find((source) => source.name === entry.pendingName);
         return { fileName: fileRecord?.name || entry.pendingName, localPdfId: fileRecord?.localPdfId || null, index: entry.index };
       });
+      const sourceIndexes = [...(subject.meta?.sourceIndexes || []), ...newSourceIndexEntries];
+      if (notesFiles.length) {
+        curriculum = await regroupCurriculumTopicGroups({ moduleName: subject.meta.name, curriculum, sourceIndexes });
+      }
 
       const nextMeta = {
         ...subject.meta,
         curriculum,
-        sourceIndexes: [...(subject.meta?.sourceIndexes || []), ...newSourceIndexEntries],
+        sourceIndexes,
         sourceFiles: [...(subject.meta?.sourceFiles || []), ...newSourceFiles],
         examFiles: [...(subject.meta?.examFiles || []), ...newExamFiles],
         examPlan: newExamFiles.length ? null : subject.meta?.examPlan || null,
