@@ -70,19 +70,21 @@ export async function extractPages(sourcePdfBytes, pageNumbers) {
   return newDoc.save();
 }
 
-export async function renderPdfPageImage(sourcePdfBytes, pageNumber, { scale = 0.9, quality = 0.68 } = {}) {
+export async function rasterizePdfPage(sourcePdfBytes, pageNumber, { maxWidth = 1000, quality = 0.7 } = {}) {
   await waitForGlobal("pdfjsLib");
   const bytes = sourcePdfBytes instanceof Uint8Array ? sourcePdfBytes.slice() : new Uint8Array(sourcePdfBytes).slice();
   const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
   const safePage = Math.min(Math.max(1, pageNumber), pdf.numPages);
   const page = await pdf.getPage(safePage);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = Math.min(2, maxWidth / baseViewport.width);
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.floor(viewport.width);
   canvas.height = Math.floor(viewport.height);
   const context = canvas.getContext("2d");
   await page.render({ canvasContext: context, viewport }).promise;
-  return canvas.toDataURL("image/jpeg", quality);
+  return canvas.toDataURL("image/jpeg", quality).split(",")[1];
 }
 
 export function inlinePdfDocumentPart(bytes) {
