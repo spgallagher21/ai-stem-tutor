@@ -87,6 +87,18 @@ const DEFAULT_EXAM_PLAN = {
 const CURRICULUM_SCHEMA = {
   type: "OBJECT",
   properties: {
+    topicGroups: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          name: { type: "STRING" },
+          summary: { type: "STRING" },
+          topicNames: { type: "ARRAY", items: { type: "STRING" } },
+        },
+        required: ["name", "topicNames"],
+      },
+    },
     topics: {
       type: "ARRAY",
       items: {
@@ -325,12 +337,15 @@ function safeParseJSON(rawStr) {
 }
 
 function assignIds(curriculum) {
+  const topics = (curriculum.topics || []).map((topic) => ({
+    ...topic,
+    id: topic.id || crypto.randomUUID(),
+    subtopics: (topic.subtopics || []).map((st) => ({ ...st, id: st.id || crypto.randomUUID() })),
+  }));
   return {
-    topics: (curriculum.topics || []).map((topic) => ({
-      ...topic,
-      id: topic.id || crypto.randomUUID(),
-      subtopics: (topic.subtopics || []).map((st) => ({ ...st, id: st.id || crypto.randomUUID() })),
-    })),
+    ...curriculum,
+    topicGroups: normalizeTopicGroups({ ...curriculum, topics }).map(({ topics: _topics, ...group }) => ({ ...group, id: group.id || crypto.randomUUID() })),
+    topics,
   };
 }
 
@@ -340,19 +355,73 @@ function normalizeName(value) {
 
 function preserveCurriculumIds(previous, next) {
   const previousTopics = new Map((previous?.topics || []).map((topic) => [normalizeName(topic.name), topic]));
+  const previousGroups = new Map((previous?.topicGroups || []).map((group) => [normalizeName(group.name), group]));
+  const topics = (next?.topics || []).map((topic) => {
+    const existingTopic = previousTopics.get(normalizeName(topic.name));
+    const previousSubtopics = new Map((existingTopic?.subtopics || []).map((st) => [normalizeName(st.name), st]));
+    return {
+      ...topic,
+      id: topic.id || existingTopic?.id || crypto.randomUUID(),
+      subtopics: (topic.subtopics || []).map((st) => {
+        const existingSubtopic = previousSubtopics.get(normalizeName(st.name));
+        return { ...st, id: st.id || existingSubtopic?.id || crypto.randomUUID() };
+      }),
+    };
+  });
+  const grouped = normalizeTopicGroups({ ...next, topics }).map(({ topics: _topics, ...group }) => {
+    const existingGroup = previousGroups.get(normalizeName(group.name));
+    return { ...group, id: group.id || existingGroup?.id || crypto.randomUUID() };
+  });
   return {
-    topics: (next?.topics || []).map((topic) => {
-      const existingTopic = previousTopics.get(normalizeName(topic.name));
-      const previousSubtopics = new Map((existingTopic?.subtopics || []).map((st) => [normalizeName(st.name), st]));
-      return {
-        ...topic,
-        id: topic.id || existingTopic?.id || crypto.randomUUID(),
-        subtopics: (topic.subtopics || []).map((st) => {
-          const existingSubtopic = previousSubtopics.get(normalizeName(st.name));
-          return { ...st, id: st.id || existingSubtopic?.id || crypto.randomUUID() };
-        }),
-      };
-    }),
+    ...next,
+    topicGroups: grouped,
+    topics,
+  };
+}
+
+function normalizeTopicGroups(curriculum = {}) {
+  const topics = curriculum.topics || [];
+  const topicByName = new Map(topics.map((topic) => [normalizeName(topic.name), topic]));
+  const used = new Set();
+  const groups = (curriculum.topicGroups || [])
+    .map((group) => {
+      const groupTopics = (group.topicNames || [])
+        .map((name) => topicByName.get(normalizeName(name)))
+        .filter(Boolean);
+      groupTopics.forEach((topic) => used.add(topic.id || normalizeName(topic.name)));
+      return groupTopics.length ? {
+        ...group,
+        topicNames: groupTopics.map((topic) => topic.name),
+        topics: groupTopics,
+      } : null;
+    })
+    .filter(Boolean);
+
+  topics
+    .filter((topic) => !used.has(topic.id || normalizeName(topic.name)))
+    .forEach((topic) => {
+      groups.push({
+        id: topic.id,
+        name: topic.name,
+        summary: topic.summary || "",
+        topicNames: [topic.name],
+        topics: [topic],
+      });
+    });
+
+  return groups;
+}
+
+function getExamScopeFromGroup(group) {
+  const topics = group?.topics || [];
+  const subtopics = topics.flatMap((topic) => topic.subtopics || []);
+  return {
+    id: group?.id || crypto.randomUUID(),
+    name: group?.name || "Topic Group",
+    summary: group?.summary || "",
+    topics,
+    subtopics,
+    isGroup: topics.length > 1,
   };
 }
 
@@ -1209,6 +1278,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartTo
   const masteryLog = subject.masteryLog || {};
   const weakCount = Object.values(masteryLog).filter((entry) => entry.status === "attempted").length;
   const progress = computeSubjectProgress(subject.meta?.curriculum, masteryLog);
+  const topicGroups = normalizeTopicGroups(subject.meta?.curriculum);
 
   const readFiles = async (files, setter, label) => {
     const next = [];
@@ -1265,43 +1335,54 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartTo
           </button>
         </section>
 
-        {(subject.meta?.curriculum?.topics || []).map((topic) => (
-          <section key={topic.id} style={{ marginBottom: 34 }}>
+        {topicGroups.map((group) => {
+          const examScope = getExamScopeFromGroup(group);
+          return (
+          <section key={group.id || group.name} style={{ marginBottom: 34 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-              <h2 className="heading" style={{ fontSize: 18, margin: 0 }}>{topic.name}</h2>
-              <button className="btn secondary" onClick={() => onStartTopicExam(topic)} disabled={loading}>
-                Topic Exam
+              <div>
+                <h2 className="heading" style={{ fontSize: 18, margin: 0 }}>{group.name}</h2>
+                {group.summary && <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>{group.summary}</p>}
+              </div>
+              <button className="btn secondary" onClick={() => onStartTopicExam(examScope)} disabled={loading}>
+                Group Exam
               </button>
             </div>
-            <div className="grid subject-grid">
-              {(topic.subtopics || []).map((st) => {
-                const entry = masteryLog[st.id];
-                const hasLesson = lessonStatus.has(st.id);
-                const borderColor = entry?.status === "mastered" ? "var(--success)" : entry?.status === "attempted" ? "var(--warning)" : "var(--border)";
-                return (
-                  <div
-                    key={st.id}
-                    role="button"
-                    tabIndex={0}
-                    className="card signature-line"
-                    data-tour="subtopicCard"
-                    onClick={() => onStartSubtopic(topic, st)}
-                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onStartSubtopic(topic, st); } }}
-                    style={{ padding: 18, cursor: "pointer", borderColor, opacity: hasLesson ? 1 : 0.62 }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <strong>{st.name}</strong>
-                      <span className="mono muted">{st.difficulty || 1}/5</span>
-                    </div>
-                    <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
-                      {entry?.status === "mastered" ? "Mastered" : entry?.status === "attempted" ? "Needs review" : hasLesson ? "Lesson ready" : "Lesson not generated yet"}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            {(group.topics || []).map((topic) => (
+              <div key={topic.id} style={{ marginBottom: 22 }}>
+                {group.topics.length > 1 && <h3 className="heading" style={{ fontSize: 15, margin: "0 0 10px" }}>{topic.name}</h3>}
+                <div className="grid subject-grid">
+                  {(topic.subtopics || []).map((st) => {
+                    const entry = masteryLog[st.id];
+                    const hasLesson = lessonStatus.has(st.id);
+                    const borderColor = entry?.status === "mastered" ? "var(--success)" : entry?.status === "attempted" ? "var(--warning)" : "var(--border)";
+                    return (
+                      <div
+                        key={st.id}
+                        role="button"
+                        tabIndex={0}
+                        className="card signature-line"
+                        data-tour="subtopicCard"
+                        onClick={() => onStartSubtopic(topic, st)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onStartSubtopic(topic, st); } }}
+                        style={{ padding: 18, cursor: "pointer", borderColor, opacity: hasLesson ? 1 : 0.62 }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <strong>{st.name}</strong>
+                          <span className="mono muted">{st.difficulty || 1}/5</span>
+                        </div>
+                        <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
+                          {entry?.status === "mastered" ? "Mastered" : entry?.status === "attempted" ? "Needs review" : hasLesson ? "Lesson ready" : "Lesson not generated yet"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </section>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1581,7 +1662,7 @@ function TopicExamView({
         <button className="btn ghost" onClick={onBack}>Back to module</button>
         <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", marginBottom: 22, flexWrap: "wrap" }}>
           <div>
-            <h1 className="heading" style={{ marginBottom: 6 }}>{topic.name} Exam</h1>
+            <h1 className="heading" style={{ marginBottom: 6 }}>{topic.name} Group Exam</h1>
             <p className="muted" style={{ margin: 0 }}>{subject.meta?.name} - {attempted}/{exam?.questions?.length || 0} attempted</p>
           </div>
           <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Refresh exam</button>
@@ -1923,12 +2004,15 @@ ${digest}
 
 Return:
 1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, useful keywords, and page hints.
-2. curriculum: the full updated module map.
+2. curriculum: the full updated module map, including topicGroups above topics where several related topics should be examined together.
 
 Rules:
 - Preserve existing broad topics when the new notes fit them.
 - Add a new topic only when the digest clearly introduces a distinct overarching area.
 - Add or adjust subtopics/classes inside an existing topic when that is enough.
+- Create or update topicGroups as broad exam units that contain related topics. A topicGroup should be broader than a single niche topic when the module has several related narrow topics.
+- Prefer 2-6 topicGroups for a normal module. Do not create one group per tiny topic unless there is genuinely nothing related to group it with.
+- Each topicGroup must list existing topic names in topicNames exactly as they appear in curriculum.topics.
 - Minimise the number of subtopics. Each subtopic should be a bite-sized but meaningful class, not a single slide or tiny concept.
 - For each broad topic, include a coverageChecklist of the key concepts, definitions, assumptions, derivations, named examples, diseases, drugs, organisms, clinical cases, experiments, diagrams, and equations a generated lesson must cover if the notes mention them.
 - Put sourceFileNames and sourcePageHints on subtopics when the digest supports them.
@@ -1943,9 +2027,12 @@ ${digest}
 
 Return:
 1. sourceIndex: a compact index of what this PDF covers, with broad topics, likely subtopics, coverageChecklist items, useful keywords, and page hints.
-2. curriculum: a compact module map with this hierarchy only: Module -> topics -> subtopics/classes -> lessons generated later.
+2. curriculum: a compact module map with this hierarchy: Module -> topicGroups -> topics -> subtopics/classes -> lessons generated later.
 
 Rules:
+- topicGroups are broad exam units used for group-level tests. They should contain related topics wherever possible.
+- Prefer 2-6 topicGroups for a normal module. Avoid one group per tiny topic unless no reasonable grouping exists yet.
+- Each topicGroup must list topicNames that exactly match names in curriculum.topics.
 - Topics must be broad lecture-note sections or recurring blocks the digest clearly supports.
 - Subtopics are class-sized lesson units inside each topic.
 - Minimise the number of subtopics. Prefer fewer, well-scoped classes over lots of tiny fragments.
@@ -2337,11 +2424,11 @@ For non-multiple-choice questions, leave options empty and correct_option empty.
     setFeedback(question?.attempts?.[0] || null);
   };
 
-  const startTopicExam = async (topic, force = false) => {
-    if (!selectedSubject || !topic) return;
+  const startTopicExam = async (scope, force = false) => {
+    if (!selectedSubject || !scope) return;
     setLoading(true);
-    setLoadingMsg(force ? "Refreshing the topic exam..." : "Preparing the topic exam...");
-    setActiveTopicExam(topic);
+    setLoadingMsg(force ? "Refreshing the group exam..." : "Preparing the group exam...");
+    setActiveTopicExam(scope);
     setTopicExam(null);
     setTopicExamQuestion(null);
     setStudentAnswer("");
@@ -2349,7 +2436,7 @@ For non-multiple-choice questions, leave options empty and correct_option empty.
     setFeedback(null);
     setScreen("topicExam");
     try {
-      const key = topicExamKey(selectedSubject.id, topic.id);
+      const key = topicExamKey(selectedSubject.id, scope.id);
       const signature = topicSourceSignature(selectedSubject);
       if (!force && hasFirebase && db) {
         const cached = await getDoc(doc(db, "users", uid, "topicExams", key));
@@ -2363,19 +2450,21 @@ For non-multiple-choice questions, leave options empty and correct_option empty.
       }
 
       const plan = await ensureExamPlan(selectedSubject);
-      const subtopicNames = (topic.subtopics || []).map((st) => st.name).join(", ");
-      const documentPart = await getDocumentPart(selectedSubject, { queryText: `${topic.name} ${subtopicNames}`, scoped: true, maxPages: 28 });
+      const topicNames = (scope.topics || []).map((topic) => topic.name).join(", ");
+      const subtopicNames = (scope.subtopics || []).map((st) => st.name).join(", ");
+      const documentPart = await getDocumentPart(selectedSubject, { queryText: `${scope.name} ${topicNames} ${subtopicNames}`, scoped: true, maxPages: 28 });
       const prompt = `${TUTOR_VOICE_PROMPT}
 
-Write a ${TOPIC_EXAM_QUESTION_COUNT}-question topic-level exam for the topic "${topic.name}" in the module "${selectedSubject.meta.name}".
+Write a ${TOPIC_EXAM_QUESTION_COUNT}-question exam for the broad topic group "${scope.name}" in the module "${selectedSubject.meta.name}".
 
-This is broader than a lesson check-up. Questions may combine ideas across these classes: ${subtopicNames || "the classes in this topic"}.
+This is broader than a lesson check-up. Questions may combine ideas across these topics: ${topicNames || scope.name}.
+Classes inside this exam scope: ${subtopicNames || "the classes in this group"}.
 
 Source and scope rules:
 - Use the attached lecture-note pages as the source of truth.
 - Do not ask for facts, named examples, derivations, diseases, mechanisms, equations, or cases that are not present in the attached notes.
-- Keep the difficulty exam-level, but calibrate to the actual depth of the topic notes. If the notes are introductory, make the questions demanding introductory questions rather than pretending the topic has advanced coverage.
-- At least one question should require synthesis across two or more classes if the notes support that.
+- Keep the difficulty exam-level, but calibrate to the actual depth of the grouped notes. If the notes are introductory, make the questions demanding introductory questions rather than pretending the group has advanced coverage.
+- At least one question should require synthesis across two or more topics or classes if the notes support that.
 - Include one multiple_choice question as a warm-up, then use a mix of short_answer, derivation, and/or long_answer questions where appropriate.
 - For every multiple_choice question, options must contain exactly four actual student-facing answer choices. Never use JSON keys, field names, placeholders, numbers, or labels like "correct_option", "difficulty", "mark", "marks", "hint", "question", "type", "1", or "2" as answer choices. correct_option must exactly equal one of the four options.
 - Model answers must be detailed enough to mark from and must only rely on content available in the notes.
@@ -2600,7 +2689,10 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
   // 1.2 Delete subject + clean up its generated docs to avoid orphaned Firestore data
   const deleteSubject = async (subject) => {
     const keys = (subject.meta?.curriculum?.topics || []).flatMap((topic) => (topic.subtopics || []).map((st) => lessonKey(subject.id, st.id)));
-    const topicKeys = (subject.meta?.curriculum?.topics || []).map((topic) => topicExamKey(subject.id, topic.id));
+    const topicKeys = [
+      ...(subject.meta?.curriculum?.topics || []).map((topic) => topicExamKey(subject.id, topic.id)),
+      ...normalizeTopicGroups(subject.meta?.curriculum).map((group) => topicExamKey(subject.id, group.id)),
+    ];
     if (hasFirebase && db) {
       await Promise.all(
         [
