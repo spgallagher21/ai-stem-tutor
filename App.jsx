@@ -39,6 +39,7 @@ const DESCRIBE_IMAGE_ENDPOINT = "/api/describe-image";
 const MAX_ATTEMPTS_STORED = 20;
 const QUESTION_BATCH_SIZE = 2;
 const MAX_SUPPLEMENTARY_IMAGE_CANDIDATES = 4;
+const MAX_SUPPLEMENTARY_IMAGES = 2;
 const APP_NAME = "StudyLoop";
 
 const THEME_CHOICES = [
@@ -146,6 +147,12 @@ const MODULE_INDEX_SCHEMA = {
   },
   required: ["sourceIndex", "curriculum"],
 };
+
+const VISUAL_PAGE_TERMS = [
+  "figure", "fig.", "diagram", "graph", "chart", "plot", "table", "flowchart", "schematic",
+  "image", "scan", "x-ray", "xray", "mri", "ct", "ultrasound", "histology", "micrograph",
+  "pathway", "circuit", "map", "spectrum", "structure", "anatomy", "mechanism",
+];
 
 const LESSON_SCHEMA_V2 = {
   type: "OBJECT",
@@ -450,6 +457,89 @@ function findRelevantSourceContext(subject, topic, subtopic) {
     .filter(Boolean)
     .slice(0, 3);
   return matches.length ? JSON.stringify(matches) : "No saved source-index match found; rely on the scoped PDF pages.";
+}
+
+function normalisePageNumber(page) {
+  const value = Math.round(Number(page));
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function visualTermScore(text = "") {
+  const lower = text.toLowerCase();
+  return VISUAL_PAGE_TERMS.reduce((score, term) => score + (lower.includes(term) ? 1 : 0), 0);
+}
+
+function isLikelyUsefulVisualDescription(description = "") {
+  const lower = description.toLowerCase();
+  const visualScore = visualTermScore(lower);
+  const textOnlySignals = ["mostly text", "text-only", "primarily text", "bullet point", "title slide", "decorative"];
+  const hasTextOnlySignal = textOnlySignals.some((signal) => lower.includes(signal));
+  return visualScore >= 1 && !hasTextOnlySignal;
+}
+
+function fallbackSupplementaryImage(described = []) {
+  const image = described.find((item) => isLikelyUsefulVisualDescription(item.description));
+  if (!image) return [];
+  return [{
+    page: image.page,
+    caption: `Supplementary figure from page ${image.page}: this visual appears to contain diagrammatic or spatial information that may be useful alongside the written explanation.`,
+    alt_text: image.description || `Supplementary figure from page ${image.page}`,
+    imageBase64: image.imageBase64,
+    describedBy: image.modelUsed || "",
+  }];
+}
+
+function buildImageCandidates(draftLesson, documentContext, subtopic) {
+  const pageIndex = documentContext?.pageIndex || [];
+  const pageByNumber = new Map(pageIndex.map((page) => [page.pageNum, page]));
+  const scopedPages = new Set(documentContext?.pages || []);
+  const subtopicPageHints = new Set((subtopic?.sourcePageHints || []).map(normalisePageNumber).filter(Boolean));
+  const candidates = new Map();
+
+  const addCandidate = (page, reason, weight = 0) => {
+    const pageNumber = normalisePageNumber(page);
+    if (!pageNumber) return;
+    if (pageIndex.length && !pageByNumber.has(pageNumber)) return;
+    const existing = candidates.get(pageNumber);
+    candidates.set(pageNumber, {
+      page: pageNumber,
+      reason: existing?.reason ? `${existing.reason}; ${reason}` : reason,
+      weight: Math.max(existing?.weight || 0, weight),
+    });
+  };
+
+  (draftLesson?.flagged_image_pages || []).forEach((item) => {
+    addCandidate(item.page, item.reason || "The lesson draft identified this page as containing a useful visual.", 100);
+  });
+
+  scopedPages.forEach((pageNumber) => {
+    const page = pageByNumber.get(pageNumber);
+    const score = visualTermScore(page?.text || "");
+    if (score > 0) addCandidate(pageNumber, "The scoped lesson pages mention a likely diagram, figure, graph, table, scan, or chart.", 55 + score);
+  });
+
+  subtopicPageHints.forEach((pageNumber) => {
+    const page = pageByNumber.get(pageNumber);
+    const score = visualTermScore(page?.text || "");
+    if (score > 0 || scopedPages.has(pageNumber)) {
+      addCandidate(pageNumber, "The source map links this page to the current class and it may contain a visual worth checking.", 45 + score);
+    }
+  });
+
+  if (!candidates.size) {
+    pageIndex
+      .map((page) => ({ pageNum: page.pageNum, score: visualTermScore(page.text || "") }))
+      .filter((page) => page.score > 0)
+      .sort((a, b) => b.score - a.score || a.pageNum - b.pageNum)
+      .slice(0, 2)
+      .forEach((page) => {
+        addCandidate(page.pageNum, "The PDF text suggests this page may contain a visual learning aid.", 25 + page.score);
+      });
+  }
+
+  return [...candidates.values()]
+    .sort((a, b) => b.weight - a.weight || a.page - b.page)
+    .slice(0, MAX_SUPPLEMENTARY_IMAGE_CANDIDATES);
 }
 
 // --- 3.3 Adaptive question difficulty based on real performance ---
@@ -1800,12 +1890,8 @@ Rules:
     return context?.documentPart || null;
   };
 
-  const buildSupplementaryImages = async (draftLesson, documentContext) => {
-    const allowedPages = documentContext?.pages?.length ? new Set(documentContext.pages) : null;
-    const candidates = (draftLesson?.flagged_image_pages || [])
-      .filter((item) => Number.isFinite(Number(item.page)))
-      .filter((item) => !allowedPages || allowedPages.has(Math.round(Number(item.page))))
-      .slice(0, MAX_SUPPLEMENTARY_IMAGE_CANDIDATES);
+  const buildSupplementaryImages = async (draftLesson, documentContext, subtopic) => {
+    const candidates = buildImageCandidates(draftLesson, documentContext, subtopic);
     if (!candidates.length || !documentContext?.bytes) return [];
 
     const described = [];
@@ -1831,9 +1917,13 @@ Rules:
     setLoadingMsg("Checking whether figures add value...");
     const decisionPrompt = `${TUTOR_VOICE_PROMPT}
 
-Here is a draft lesson and candidate source-slide images with detailed visual descriptions. Decide whether each image adds real learning value beyond what the lesson text already covers, or whether it is redundant, decorative, or just a slide screenshot.
+Here is a draft lesson and candidate source-slide images with detailed visual descriptions. Decide whether each image adds real learning value as a supplementary figure, or whether it is redundant, decorative, mostly a text slide, or just a slide screenshot.
 
-Bias toward excluding. Only include images that would meaningfully help a student because the visual information is hard to convey in text alone. The written lesson must stand on its own.
+Be selective, but do include appropriate visuals. Include up to ${MAX_SUPPLEMENTARY_IMAGES} images when they are complex original visuals such as diagrams, graphs, charts, circuits, anatomy/pathway figures, scans, micrographs, tables, mechanisms, or spatial layouts that would help a student understand something the text cannot fully recreate.
+
+Do not include ordinary bullet-point slides, title slides, decorative images, or screenshots whose useful content is already just text. The written lesson must stand on its own; included figures should add information or spatial/visual context, not replace explanation.
+
+For every included image, write a caption that explains why the figure matters for this lesson and how the student should read it.
 
 Lesson:
 ${JSON.stringify(draftLesson)}
@@ -1848,9 +1938,9 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
         generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: SUPPLEMENTARY_IMAGE_SCHEMA },
       }, { onStatus: setLoadingMsg }));
       const imageByPage = new Map(described.map((item) => [item.page, item]));
-      return (decision.supplementary_images || [])
+      const selectedImages = (decision.supplementary_images || [])
         .filter((item) => item.include && imageByPage.has(Math.round(Number(item.page))))
-        .slice(0, MAX_SUPPLEMENTARY_IMAGE_CANDIDATES)
+        .slice(0, MAX_SUPPLEMENTARY_IMAGES)
         .map((item) => {
           const page = Math.round(Number(item.page));
           const image = imageByPage.get(page);
@@ -1862,9 +1952,10 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
             describedBy: image.modelUsed || "",
           };
         });
+      return selectedImages.length ? selectedImages : fallbackSupplementaryImage(described);
     } catch (err) {
       console.warn("Skipping supplementary image inclusion decision", err);
-      return [];
+      return fallbackSupplementaryImage(described);
     }
   };
 
@@ -2011,7 +2102,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
         generationConfig: { temperature: 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
       }, { onStatus: setLoadingMsg }));
 
-      const supplementary_images = await buildSupplementaryImages(finalLesson, documentContext);
+      const supplementary_images = await buildSupplementaryImages(finalLesson, documentContext, subtopic);
       const payload = { ...finalLesson, supplementary_images, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
       setLesson(payload);
