@@ -402,6 +402,38 @@ function appendAttempt(question, attempt) {
   };
 }
 
+function isBadMultipleChoiceOption(option) {
+  const normalized = String(option || "").trim().toLowerCase().replace(/[_\s-]+/g, "_");
+  const schemaWords = new Set(["option", "options", "correct_option", "correct", "difficulty", "mark", "marks", "modelanswer", "model_answer", "hint", "question", "type"]);
+  return !normalized || normalized.length < 3 || /^\d+$/.test(normalized) || schemaWords.has(normalized);
+}
+
+function normalizeQuestionBatch(rawQuestions = [], { expectedCount = QUESTION_BATCH_SIZE } = {}) {
+  const normalized = rawQuestions
+    .map((question) => {
+      if (question?.type !== "multiple_choice") {
+        return { ...question, options: [], correct_option: "" };
+      }
+      const options = [...new Set((question.options || []).map((option) => String(option || "").trim()).filter(Boolean))];
+      const correct = String(question.correct_option || "").trim();
+      if (
+        options.length !== 4 ||
+        options.some(isBadMultipleChoiceOption) ||
+        isBadMultipleChoiceOption(correct) ||
+        !options.includes(correct)
+      ) {
+        return null;
+      }
+      return { ...question, options, correct_option: correct };
+    })
+    .filter(Boolean);
+
+  if (normalized.length < expectedCount) {
+    throw new Error("The AI returned a malformed multiple-choice question. Try generating again.");
+  }
+  return normalized.slice(0, expectedCount);
+}
+
 function truncateText(text, maxChars) {
   const clean = (text || "").replace(/\s+/g, " ").trim();
   return clean.length > maxChars ? `${clean.slice(0, maxChars)}...` : clean;
@@ -2262,7 +2294,12 @@ Calibrate scope:
 - If this class contains derivations, cases, or worked examples, ask deeper questions that mirror those exact class materials.
 - If a question would require content from neighbouring classes, save that style for the topic exam instead.
 
-Question 1 must be multiple_choice. Make it a useful starter question that checks a core definition, assumption, equation meaning, concept distinction, or common misconception from the notes. Include exactly 4 plausible options and put the exact correct option text in correct_option.
+Question 1 must be multiple_choice. Make it a useful starter question that checks a core definition, assumption, equation meaning, concept distinction, or common misconception from the notes. Include exactly 4 plausible answer choices in options and put the exact correct answer choice text in correct_option.
+
+Multiple-choice formatting rules:
+- options must contain four actual student-facing answer choices, not numbers, letters, JSON keys, field names, labels, or placeholders.
+- Never use words like "correct_option", "difficulty", "mark", "marks", "hint", "question", "type", "1", or "2" as answer choices.
+- correct_option must exactly equal one of the four strings in options.
 
 Question 2 type: ${followUpType.type}. Style guidance from the real past papers: ${followUpType.style_notes || plan.overall_notes || "standard exam phrasing"}.
 Difficulty: ${adaptiveDifficulty}/5.
@@ -2275,7 +2312,8 @@ For non-multiple-choice questions, leave options empty and correct_option empty.
         documentPart,
         generationConfig: { temperature: 0.4, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
       }, { onStatus: setLoadingMsg }));
-      const newQuestions = (parsed.questions || []).map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now() }));
+      const newQuestions = normalizeQuestionBatch(parsed.questions, { expectedCount: QUESTION_BATCH_SIZE })
+        .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now() }));
       if (!newQuestions.length) throw new Error("The AI didn't return any questions. Try again.");
       const nextBank = [...bank, ...newQuestions];
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "questionBanks", key), { questions: nextBank }, { merge: true });
@@ -2339,6 +2377,7 @@ Source and scope rules:
 - Keep the difficulty exam-level, but calibrate to the actual depth of the topic notes. If the notes are introductory, make the questions demanding introductory questions rather than pretending the topic has advanced coverage.
 - At least one question should require synthesis across two or more classes if the notes support that.
 - Include one multiple_choice question as a warm-up, then use a mix of short_answer, derivation, and/or long_answer questions where appropriate.
+- For every multiple_choice question, options must contain exactly four actual student-facing answer choices. Never use JSON keys, field names, placeholders, numbers, or labels like "correct_option", "difficulty", "mark", "marks", "hint", "question", "type", "1", or "2" as answer choices. correct_option must exactly equal one of the four options.
 - Model answers must be detailed enough to mark from and must only rely on content available in the notes.
 
 Past-paper style guidance:
@@ -2353,7 +2392,7 @@ For multiple-choice questions, include exactly 4 plausible options and put the e
         generationConfig: { temperature: 0.35, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
       }, { onStatus: setLoadingMsg }));
 
-      const questions = (parsed.questions || []).slice(0, TOPIC_EXAM_QUESTION_COUNT).map((qItem, index) => ({
+      const questions = normalizeQuestionBatch(parsed.questions, { expectedCount: TOPIC_EXAM_QUESTION_COUNT }).map((qItem, index) => ({
         ...qItem,
         id: qItem.id || crypto.randomUUID(),
         topicExam: true,
