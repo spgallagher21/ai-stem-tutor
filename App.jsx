@@ -38,6 +38,7 @@ const UPLOAD_FILE_ENDPOINT = "/api/upload-file";
 const DESCRIBE_IMAGE_ENDPOINT = "/api/describe-image";
 const MAX_ATTEMPTS_STORED = 20;
 const QUESTION_BATCH_SIZE = 2;
+const TOPIC_EXAM_QUESTION_COUNT = 4;
 const MAX_SUPPLEMENTARY_IMAGE_CANDIDATES = 4;
 const MAX_SUPPLEMENTARY_IMAGES = 2;
 const APP_NAME = "StudyLoop";
@@ -357,6 +358,18 @@ function preserveCurriculumIds(previous, next) {
 
 function lessonKey(subjectId, subtopicId) {
   return `${subjectId}_${subtopicId}`;
+}
+
+function topicExamKey(subjectId, topicId) {
+  return `${subjectId}_${topicId}`;
+}
+
+function topicSourceSignature(subject) {
+  return JSON.stringify((subject.meta?.sourceFiles || []).map((file) => ({
+    name: file.name,
+    pageCount: file.pageCount || 0,
+    localPdfId: file.localPdfId || file.path || "",
+  })));
 }
 
 function computeSubjectProgress(curriculum, masteryLog = {}) {
@@ -1158,7 +1171,7 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
   );
 }
 
-function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewWeak, onAddModuleFiles, loading, loadingMsg, showToast }) {
+function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartTopicExam, onReviewWeak, onAddModuleFiles, loading, loadingMsg, showToast }) {
   const [notesFiles, setNotesFiles] = useState([]);
   const [examFiles, setExamFiles] = useState([]);
   const masteryLog = subject.masteryLog || {};
@@ -1222,7 +1235,12 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onReviewW
 
         {(subject.meta?.curriculum?.topics || []).map((topic) => (
           <section key={topic.id} style={{ marginBottom: 34 }}>
-            <h2 className="heading" style={{ fontSize: 18 }}>{topic.name}</h2>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+              <h2 className="heading" style={{ fontSize: 18, margin: 0 }}>{topic.name}</h2>
+              <button className="btn secondary" onClick={() => onStartTopicExam(topic)} disabled={loading}>
+                Topic Exam
+              </button>
+            </div>
             <div className="grid subject-grid">
               {(topic.subtopics || []).map((st) => {
                 const entry = masteryLog[st.id];
@@ -1519,6 +1537,85 @@ function LearnView({
   );
 }
 
+function TopicExamView({
+  subject, topic, exam, activeQuestion, studentAnswer, setStudentAnswer, selectedOption, setSelectedOption,
+  feedback, onBack, onRegenerate, onPickQuestion, onSubmitAnswer, loading,
+}) {
+  const attempted = (exam?.questions || []).filter((q) => q.attempts?.length).length;
+  const q = activeQuestion;
+  return (
+    <div className="app-shell">
+      <div className="container">
+        <button className="btn ghost" onClick={onBack}>Back to module</button>
+        <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", marginBottom: 22, flexWrap: "wrap" }}>
+          <div>
+            <h1 className="heading" style={{ marginBottom: 6 }}>{topic.name} Exam</h1>
+            <p className="muted" style={{ margin: 0 }}>{subject.meta?.name} - {attempted}/{exam?.questions?.length || 0} attempted</p>
+          </div>
+          <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Refresh exam</button>
+        </header>
+
+        <div className="grid" style={{ gridTemplateColumns: "minmax(220px, 300px) minmax(0, 1fr)", alignItems: "start" }}>
+          <aside className="card" style={{ padding: 16 }}>
+            <strong>Questions</strong>
+            <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+              {(exam?.questions || []).map((question, index) => {
+                const attemptedQuestion = question.attempts?.length > 0;
+                return (
+                  <button
+                    key={question.id}
+                    className={`btn ${q?.id === question.id ? "" : "secondary"}`}
+                    onClick={() => onPickQuestion(question)}
+                    style={{ justifyContent: "space-between", textAlign: "left" }}
+                  >
+                    <span>Q{index + 1}</span>
+                    <span className="mono">{attemptedQuestion ? `${question.attempts[0].partial_credit_percent}%` : QUESTION_TYPE_LABELS[question.type] || question.type}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
+
+          {q ? (
+            <div className="card" style={{ padding: 24 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10, gap: 12 }}>
+                <strong style={{ color: "var(--accent-text)" }}>{QUESTION_TYPE_LABELS[q.type] || q.type}</strong>
+                <span className="muted mono">{q.marks ? `${q.marks} marks` : ""}</span>
+              </div>
+              <h2><MathRenderer text={q.question} /></h2>
+              {q.type === "multiple_choice" ? (
+                <div className="grid">
+                  {(q.options || []).map((opt) => (
+                    <button key={opt} className="btn secondary" disabled={!!feedback} onClick={() => setSelectedOption(opt)} style={{ textAlign: "left", borderColor: selectedOption === opt ? "var(--accent-1)" : "var(--border)" }}>
+                      <MathRenderer text={opt} />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <textarea className="input" value={studentAnswer} onChange={(e) => setStudentAnswer(e.target.value)} disabled={!!feedback} placeholder="Your answer..." style={{ minHeight: 180 }} />
+              )}
+              {!feedback ? (
+                <button className="btn" onClick={onSubmitAnswer} style={{ width: "100%", marginTop: 18 }}>Submit</button>
+              ) : (
+                <div className="card" style={{ padding: 18, marginTop: 18, background: "var(--surface-2)" }}>
+                  <strong>{feedback.correct ? "Correct" : `Partial credit: ${feedback.partial_credit_percent}%`}</strong>
+                  <p>{feedback.feedback}</p>
+                  {feedback.misconception && <p className="muted"><strong>Misconception:</strong> {feedback.misconception}</p>}
+                  {feedback.what_to_review && <p className="muted"><strong>Review:</strong> {feedback.what_to_review}</p>}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="card" style={{ padding: 24 }}>
+              <p className="muted" style={{ margin: 0 }}>Generating a topic exam...</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StemTutor() {
   const { uid, authLoading, firebaseReady: hasFirebase } = useAuth();
   const { toasts, showToast, removeToast } = useToasts();
@@ -1532,6 +1629,9 @@ function StemTutor() {
   const [selectedSubject, setSelectedSubject] = useState(null);
   const [lessonStatus, setLessonStatus] = useState(new Set());
   const [active, setActive] = useState(null);
+  const [activeTopicExam, setActiveTopicExam] = useState(null);
+  const [topicExam, setTopicExam] = useState(null);
+  const [topicExamQuestion, setTopicExamQuestion] = useState(null);
   const [lesson, setLesson] = useState(null);
   const [phase, setPhase] = useState("notes");
   const [studentAnswer, setStudentAnswer] = useState("");
@@ -1845,7 +1945,7 @@ Rules:
     return { bytes, pageIndex: stored?.pageIndex || source.pageIndex || [] };
   };
 
-  const getDocumentContext = async (subject, { queryText, scoped = true, sourceKind = "notes" } = {}) => {
+  const getDocumentContext = async (subject, { queryText, scoped = true, sourceKind = "notes", maxPages = 18 } = {}) => {
     const files = sourceKind === "exam" ? subject.meta?.examFiles || [] : subject.meta?.sourceFiles || [];
     let source = files[0];
     if (sourceKind === "notes" && scoped && files.length > 1) {
@@ -1863,7 +1963,7 @@ Rules:
     let payloadBytes = bytes;
     let pages = [];
     if (scoped && pageIndex.length) {
-      pages = scoreRelevantPages(pageIndex, queryText, 18);
+      pages = scoreRelevantPages(pageIndex, queryText, maxPages);
       payloadBytes = await extractPages(bytes, pages);
     }
     if (payloadBytes.byteLength <= MAX_INLINE_DOCUMENT_BYTES) {
@@ -2082,12 +2182,15 @@ Create a sectioned lesson for the class "${subtopic.name}" inside the topic "${t
 
 Quality bar:
 - Cover every relevant concept, definition, assumption, derivation, equation, example, diagram idea, and lecturer emphasis found in the attached scoped lecture-note pages for this class.
+- Write notes that are deep enough for the student to answer demanding questions about this class without needing to reopen the lecture slides. If a concept could be examined, explain the mechanism, reasoning, boundary conditions, and how it connects to adjacent ideas inside this class.
 - Preserve and explain specific examples from the notes. In medicine/biology this includes named diseases, symptoms, pathogens, drugs, biomarkers, anatomy, pathways, diagnostic examples, and clinical cases. In other subjects this includes named systems, materials, experiments, case studies, laws, mechanisms, and worked numerical examples.
 - Use the saved source-index context as a coverage plan, but treat the attached pages as the source of truth.
 - Keep the scope limited to this class and its required prerequisites, but do not make the notes short just to be "bite-sized".
-- Prefer 5-9 substantial teaching sections when the notes warrant it.
+- Prefer 7-12 substantial teaching sections when the notes warrant it. For introductory classes, include the foundations thoroughly and make clear what is not yet examinable at advanced depth.
 - Each section should include key_points listing the concrete ideas it covered.
 - Include coverage_checklist listing the major lecture-note items you covered, phrased as student-checkable bullets.
+- Include enough detail that every item in coverage_checklist is answerable from the lesson text itself.
+- Include at least one section that explains how an examiner might test this class at an appropriate class-level scope.
 - If any original page in the attached document contains a complex diagram, graph, chart, circuit, table, scan, micrograph, pathway, or figure that a text description alone would not capture well, list its original page number and a short reason in flagged_image_pages. Do not flag pages that are ordinary text slides, title slides, or bullet points.
 - The written lesson must still explain the content fully in text. Any later supplementary figures are optional additions, not replacements for explanation.
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
@@ -2150,7 +2253,14 @@ Before returning, silently self-check every equation, claim, and worked-example 
         : chosenType;
       const documentPart = await getDocumentPart(selectedSubject, { queryText: `${active.topic.name} ${active.subtopic.name}`, scoped: true });
       const adaptiveDifficulty = computeAdaptiveDifficulty(active.subtopic.difficulty, bank);
-      const prompt = `Write ${QUESTION_BATCH_SIZE} DISTINCT practice questions on the class "${active.subtopic.name}" inside the topic "${active.topic.name}" for a college exam in the module "${selectedSubject.meta.name}", each testing a different angle of this class so they don't feel repetitive.
+      const prompt = `Write ${QUESTION_BATCH_SIZE} DISTINCT check-up questions on the class "${active.subtopic.name}" inside the topic "${active.topic.name}" for the module "${selectedSubject.meta.name}", each testing a different angle of this class so they don't feel repetitive.
+
+These are lesson-level check-up questions, not full topic exam questions. They may be challenging, but every required fact, step, definition, assumption, example, or equation must be taught in the attached scoped lecture-note pages for this specific class. Do not ask synthesis questions that require later classes or the whole topic unless the attached class notes explicitly cover that synthesis.
+
+Calibrate scope:
+- If this class is introductory, ask demanding foundation questions about definitions, mechanisms, assumptions, and simple applications.
+- If this class contains derivations, cases, or worked examples, ask deeper questions that mirror those exact class materials.
+- If a question would require content from neighbouring classes, save that style for the topic exam instead.
 
 Question 1 must be multiple_choice. Make it a useful starter question that checks a core definition, assumption, equation meaning, concept distinction, or common misconception from the notes. Include exactly 4 plausible options and put the exact correct option text in correct_option.
 
@@ -2175,6 +2285,147 @@ For non-multiple-choice questions, leave options empty and correct_option empty.
       setSelectedOption(null);
       setFeedback(null);
       setPhase("question");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const pickTopicExamQuestion = (question) => {
+    setTopicExamQuestion(question);
+    setStudentAnswer("");
+    setSelectedOption(null);
+    setFeedback(question?.attempts?.[0] || null);
+  };
+
+  const startTopicExam = async (topic, force = false) => {
+    if (!selectedSubject || !topic) return;
+    setLoading(true);
+    setLoadingMsg(force ? "Refreshing the topic exam..." : "Preparing the topic exam...");
+    setActiveTopicExam(topic);
+    setTopicExam(null);
+    setTopicExamQuestion(null);
+    setStudentAnswer("");
+    setSelectedOption(null);
+    setFeedback(null);
+    setScreen("topicExam");
+    try {
+      const key = topicExamKey(selectedSubject.id, topic.id);
+      const signature = topicSourceSignature(selectedSubject);
+      if (!force && hasFirebase && db) {
+        const cached = await getDoc(doc(db, "users", uid, "topicExams", key));
+        if (cached.exists() && cached.data().sourceSignature === signature) {
+          const savedExam = cached.data();
+          setTopicExam(savedExam);
+          pickTopicExamQuestion((savedExam.questions || []).find((q) => !q.attempts?.length) || savedExam.questions?.[0] || null);
+          setLoading(false);
+          return;
+        }
+      }
+
+      const plan = await ensureExamPlan(selectedSubject);
+      const subtopicNames = (topic.subtopics || []).map((st) => st.name).join(", ");
+      const documentPart = await getDocumentPart(selectedSubject, { queryText: `${topic.name} ${subtopicNames}`, scoped: true, maxPages: 28 });
+      const prompt = `${TUTOR_VOICE_PROMPT}
+
+Write a ${TOPIC_EXAM_QUESTION_COUNT}-question topic-level exam for the topic "${topic.name}" in the module "${selectedSubject.meta.name}".
+
+This is broader than a lesson check-up. Questions may combine ideas across these classes: ${subtopicNames || "the classes in this topic"}.
+
+Source and scope rules:
+- Use the attached lecture-note pages as the source of truth.
+- Do not ask for facts, named examples, derivations, diseases, mechanisms, equations, or cases that are not present in the attached notes.
+- Keep the difficulty exam-level, but calibrate to the actual depth of the topic notes. If the notes are introductory, make the questions demanding introductory questions rather than pretending the topic has advanced coverage.
+- At least one question should require synthesis across two or more classes if the notes support that.
+- Include one multiple_choice question as a warm-up, then use a mix of short_answer, derivation, and/or long_answer questions where appropriate.
+- Model answers must be detailed enough to mark from and must only rely on content available in the notes.
+
+Past-paper style guidance:
+${JSON.stringify(plan)}
+
+For multiple-choice questions, include exactly 4 plausible options and put the exact correct option text in correct_option. For written questions, leave options empty and correct_option empty. Return exactly ${TOPIC_EXAM_QUESTION_COUNT} questions under a "questions" array.`;
+
+      const parsed = safeParseJSON(await callGemini({
+        apiKey: settings.geminiApiKey,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        documentPart,
+        generationConfig: { temperature: 0.35, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
+      }, { onStatus: setLoadingMsg }));
+
+      const questions = (parsed.questions || []).slice(0, TOPIC_EXAM_QUESTION_COUNT).map((qItem, index) => ({
+        ...qItem,
+        id: qItem.id || crypto.randomUUID(),
+        topicExam: true,
+        order: index + 1,
+        attempts: [],
+        createdAt: Date.now(),
+      }));
+      if (!questions.length) throw new Error("The AI didn't return a topic exam. Try again.");
+      const payload = { questions, sourceSignature: signature, updatedAt: hasFirebase ? serverTimestamp() : Date.now() };
+      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "topicExams", key), payload, { merge: true });
+      setTopicExam(payload);
+      pickTopicExamQuestion(questions[0]);
+    } catch (err) {
+      showToast(err.message, "error");
+      setScreen("subject");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitTopicExamAnswer = async () => {
+    const q = topicExamQuestion;
+    if (!selectedSubject || !activeTopicExam || !q) return;
+    if (q.type === "multiple_choice" && !selectedOption) {
+      showToast("Pick an option first.", "error");
+      return;
+    }
+    if (q.type !== "multiple_choice" && !studentAnswer.trim()) {
+      showToast("Write an answer first.", "error");
+      return;
+    }
+    setLoading(true);
+    setLoadingMsg("Grading your topic exam answer...");
+    try {
+      let parsed;
+      if (q.type === "multiple_choice") {
+        const correct = selectedOption === q.correct_option;
+        parsed = {
+          correct,
+          partial_credit_percent: correct ? 100 : 0,
+          feedback: correct ? "Correct." : `Not quite. The correct answer was: ${q.correct_option}`,
+          misconception: correct ? "" : `Selected "${selectedOption}" instead of the correct option.`,
+          what_to_review: correct ? "" : q.hint || "Review the relevant topic notes.",
+          mistake_type: correct ? "none" : "concept_gap",
+        };
+      } else {
+        const prompt = `${TUTOR_VOICE_PROMPT}
+
+Grade this student's topic exam answer like a strict but fair professor.
+
+QUESTION: ${q.question}
+MARKS AVAILABLE: ${q.marks || "n/a"}
+MODEL ANSWER: ${q.modelAnswer}
+STUDENT ANSWER: ${studentAnswer}
+
+Give partial credit where deserved. Identify misconceptions and classify the mistake as concept_gap, careless_error, misread_question, or none.`;
+        parsed = safeParseJSON(await callGemini({
+          apiKey: settings.geminiApiKey,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: GRADING_SCHEMA },
+        }, { onStatus: setLoadingMsg }));
+      }
+
+      const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
+      const nextQuestions = (topicExam?.questions || []).map((question) => question.id === q.id ? appendAttempt(question, attempt) : question);
+      const nextExam = { ...topicExam, questions: nextQuestions };
+      if (hasFirebase && db) {
+        await setDoc(doc(db, "users", uid, "topicExams", topicExamKey(selectedSubject.id, activeTopicExam.id)), { questions: nextQuestions }, { merge: true });
+      }
+      setTopicExam(nextExam);
+      setTopicExamQuestion(nextQuestions.find((question) => question.id === q.id));
+      setFeedback(parsed);
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -2307,15 +2558,19 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
     showToast("Module deleted.", "info");
   };
 
-  // 1.2 Delete subject + clean up its lessons/questionBanks docs to avoid orphaned Firestore data
+  // 1.2 Delete subject + clean up its generated docs to avoid orphaned Firestore data
   const deleteSubject = async (subject) => {
     const keys = (subject.meta?.curriculum?.topics || []).flatMap((topic) => (topic.subtopics || []).map((st) => lessonKey(subject.id, st.id)));
+    const topicKeys = (subject.meta?.curriculum?.topics || []).map((topic) => topicExamKey(subject.id, topic.id));
     if (hasFirebase && db) {
       await Promise.all(
-        keys.flatMap((key) => [
-          deleteDoc(doc(db, "users", uid, "lessons", key)).catch(() => {}),
-          deleteDoc(doc(db, "users", uid, "questionBanks", key)).catch(() => {}),
-        ])
+        [
+          ...keys.flatMap((key) => [
+            deleteDoc(doc(db, "users", uid, "lessons", key)).catch(() => {}),
+            deleteDoc(doc(db, "users", uid, "questionBanks", key)).catch(() => {}),
+          ]),
+          ...topicKeys.map((key) => deleteDoc(doc(db, "users", uid, "topicExams", key)).catch(() => {})),
+        ]
       );
       await deleteDoc(doc(db, "users", uid, "subjects", subject.id));
     } else {
@@ -2436,6 +2691,7 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
           lessonStatus={lessonStatus}
           onBack={() => setScreen("dashboard")}
           onStartSubtopic={(topic, subtopic) => generateLesson(selectedSubject, topic, subtopic)}
+          onStartTopicExam={(topic) => startTopicExam(topic)}
           onReviewWeak={reviewWeak}
           onAddModuleFiles={updateModuleFromFiles}
           loading={loading}
@@ -2466,6 +2722,23 @@ Give partial credit where deserved. Identify misconceptions and classify the mis
           showNotesPeek={showNotesPeek}
           setShowNotesPeek={setShowNotesPeek}
           mistakePattern={mistakePattern}
+        />
+      ) : screen === "topicExam" && selectedSubject && activeTopicExam ? (
+        <TopicExamView
+          subject={selectedSubject}
+          topic={activeTopicExam}
+          exam={topicExam}
+          activeQuestion={topicExamQuestion}
+          studentAnswer={studentAnswer}
+          setStudentAnswer={setStudentAnswer}
+          selectedOption={selectedOption}
+          setSelectedOption={setSelectedOption}
+          feedback={feedback}
+          onBack={() => setScreen("subject")}
+          onRegenerate={() => startTopicExam(activeTopicExam, true)}
+          onPickQuestion={pickTopicExamQuestion}
+          onSubmitAnswer={submitTopicExamAnswer}
+          loading={loading}
         />
       ) : null}
 
