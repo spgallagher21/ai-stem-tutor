@@ -24,6 +24,7 @@ import { clearLocalPdfs, deleteLocalPdfsByPrefix, getLocalPdf, saveLocalPdf } fr
 import { deleteArtifacts, exportLearningData, getArtifact, listArtifacts, saveArtifact } from "./studyStore";
 import { buildStudySession, dueSubtopics, scheduleReview } from "./studyEngine";
 import { validateCurriculum, validateGrading, validateLesson, validateQuestion } from "./validation";
+import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
 import {
   MAX_INLINE_DOCUMENT_BYTES,
   arrayBufferToBase64,
@@ -178,6 +179,18 @@ const VISUAL_PAGE_TERMS = [
   "pathway", "circuit", "map", "spectrum", "structure", "anatomy", "mechanism",
 ];
 
+const CALCULATION_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    label: { type: "STRING" },
+    expression: { type: "STRING" },
+    expected_unit: { type: "STRING" },
+    precision: { type: "NUMBER" },
+    result_context: { type: "STRING" },
+  },
+  required: ["label", "expression"],
+};
+
 const LESSON_SCHEMA_V2 = {
   type: "OBJECT",
   properties: {
@@ -231,6 +244,7 @@ const LESSON_SCHEMA_V2 = {
     coverage_checklist: { type: "ARRAY", items: { type: "STRING" } },
     summary: { type: "STRING" },
     source_refs: { type: "ARRAY", items: { type: "STRING" } },
+    calculation_requests: { type: "ARRAY", items: CALCULATION_SCHEMA },
     used_web_search: { type: "BOOLEAN" },
     needs_external_info: { type: "BOOLEAN" },
     external_info_gaps: { type: "ARRAY", items: { type: "STRING" } },
@@ -301,6 +315,8 @@ const QUESTION_SCHEMA = {
     hint: { type: "STRING" },
     marks: { type: "NUMBER" },
     difficulty: { type: "NUMBER" },
+    requires_calculation: { type: "BOOLEAN" },
+    calculation_requests: { type: "ARRAY", items: CALCULATION_SCHEMA },
   },
   required: ["type", "question", "modelAnswer", "hint"],
 };
@@ -530,7 +546,12 @@ function normalizeQuestionBatch(rawQuestions = [], { expectedCount = QUESTION_BA
       return { ...question, options, correct_option: correct };
     })
     .filter(Boolean)
-    .map(validateQuestion);
+    .map(validateQuestion)
+    .map((question) => ({
+      ...question,
+      verified_calculations: verifyCalculationRequests(question.calculation_requests, { required: question.requires_calculation }),
+    }))
+    .map(assertQuestionCalculation);
 
   if (normalized.length < expectedCount) {
     throw new Error("The AI returned a malformed multiple-choice question. Try generating again.");
@@ -1543,6 +1564,33 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
   );
 }
 
+function VerifiedCalculations({ calculations = [], paper = false }) {
+  if (!calculations.length) return null;
+  return <div className={paper ? "verified-calculations paper" : "verified-calculations"}><strong>Calculator-verified calculation{calculations.length === 1 ? "" : "s"}</strong>{calculations.map((calculation, index) => <div key={`${calculation.expression}-${index}`}><div><span className="verified-badge">Verified</span> {calculation.label || `Calculation ${index + 1}`}</div><code>{calculation.expression}</code><div className="verified-result">= {calculation.result}{calculation.result_context ? ` — ${calculation.result_context}` : ""}</div></div>)}</div>;
+}
+
+function applyDeterministicCalculationGrade(grading, question, studentAnswer) {
+  if (!question?.requires_calculation || !question.verified_calculations?.length || question.type === "multiple_choice") return grading;
+  const calculation = question.verified_calculations[question.verified_calculations.length - 1];
+  const submittedValue = extractLastNumericValue(studentAnswer);
+  const matches = numericAnswersMatch(submittedValue, calculation, 1);
+  const calculationCheck = {
+    matches,
+    submittedValue,
+    expectedResult: calculation.result,
+    message: submittedValue === null ? "No final numerical value was detected." : matches ? "The final numerical value matches the calculator." : "The final numerical value does not match the calculator.",
+  };
+  if (matches) return { ...grading, calculation_check: calculationCheck };
+  return {
+    ...grading,
+    correct: false,
+    partial_credit_percent: Math.min(70, Number(grading.partial_credit_percent || 0)),
+    feedback: `${calculationCheck.message} ${grading.feedback || ""}`.trim(),
+    mistake_type: grading.mistake_type === "none" ? "careless_error" : grading.mistake_type,
+    calculation_check: calculationCheck,
+  };
+}
+
 function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
   const outcomes = lesson.learning_outcomes || [];
   const worked = lesson.worked_example || {};
@@ -1602,6 +1650,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
           <div className="source-chips">{lesson.source_refs.map((ref, i) => <span className="source-chip" key={i}>{ref.includes("web:") ? "External: " : "Source: "}{ref.replace(/^web:/, "")}</span>)}</div>
         </div>
       )}
+      <VerifiedCalculations calculations={lesson.verified_calculations} paper />
       {lesson.supplementary_images?.length > 0 && (
         <div className="note-section">
           <h2>Supplementary Figures</h2>
@@ -1763,6 +1812,8 @@ function LearnView({
                 <p>{feedback.feedback}</p>
                 {feedback.misconception && <p className="muted"><strong>Misconception:</strong> {feedback.misconception}</p>}
                 {feedback.what_to_review && <p className="muted"><strong>Review:</strong> {feedback.what_to_review}</p>}
+                {feedback.calculation_check && <p className={feedback.calculation_check.matches ? "calculation-match" : "calculation-mismatch"}><strong>Calculator check:</strong> {feedback.calculation_check.message}</p>}
+                <VerifiedCalculations calculations={q.verified_calculations} />
                 {feedback.rubric_results?.length > 0 && <div className="rubric"><strong>Mark breakdown</strong>{feedback.rubric_results.map((item, index) => <div key={index}><span>{item.criterion}</span><span>{item.marks_awarded}/{item.marks_available}</span></div>)}</div>}
                 {mistakePattern && <p style={{ color: "var(--warning)" }}>{mistakePattern}</p>}
                 <button className="btn" onClick={() => (feedback.correct || feedback.partial_credit_percent >= 80 ? onFetchQuestion() : setPhase("notes"))}>
@@ -1854,6 +1905,8 @@ function TopicExamView({
                   <p>{feedback.feedback}</p>
                   {feedback.misconception && <p className="muted"><strong>Misconception:</strong> {feedback.misconception}</p>}
                   {feedback.what_to_review && <p className="muted"><strong>Review:</strong> {feedback.what_to_review}</p>}
+                  {feedback.calculation_check && <p className={feedback.calculation_check.matches ? "calculation-match" : "calculation-mismatch"}><strong>Calculator check:</strong> {feedback.calculation_check.message}</p>}
+                  <VerifiedCalculations calculations={q.verified_calculations} />
                   {feedback.rubric_results?.length > 0 && <div className="rubric"><strong>Mark breakdown</strong>{feedback.rubric_results.map((item, index) => <div key={index}><span>{item.criterion}</span><span>{item.marks_awarded}/{item.marks_available}</span></div>)}</div>}
                 </div>
               ) : <p className="muted">Answer recorded. Feedback will be revealed when you finish the exam.</p>}
@@ -2541,6 +2594,7 @@ Quality bar:
 - If any original page in the attached document contains a complex diagram, graph, chart, circuit, table, scan, micrograph, pathway, or figure that a text description alone would not capture well, list its original page number and a short reason in flagged_image_pages. Do not flag pages that are ordinary text slides, title slides, or bullet points.
 - The written lesson must still explain the content fully in text. Any later supplementary figures are optional additions, not replacements for explanation.
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
+- Do not perform arithmetic or numerical evaluation yourself. Formulate each required equation symbolically, then add a calculation_requests entry containing the fully substituted expression for the app's deterministic calculator. The expression must be compatible with Math.js, include units where useful (for example "12 kg * 3.5 m/s^2"), and never contain an equals sign or prose. Refer to the result as calculator-verified rather than inventing a numeric result in lesson prose.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
 
@@ -2553,6 +2607,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
       }, { onStatus: setLoadingMsg, label: "lesson draft response" });
 
       const finalLesson = validateLesson(rawLesson, documentContext?.pages || []);
+      finalLesson.verified_calculations = verifyCalculationRequests(finalLesson.calculation_requests);
       const supplementary_images = await buildSupplementaryImages(finalLesson, documentContext, subtopic);
       const payload = { ...finalLesson, supplementary_images, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
@@ -2622,7 +2677,16 @@ Question 2 type: ${followUpType.type}. Style guidance from the real past papers:
 Difficulty: ${adaptiveDifficulty}/5.
 Marks: around ${followUpType.avg_marks || 5}.
 
-For non-multiple-choice questions, leave options empty and correct_option empty. Refer to the attached lecture notes document for source material. Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in the requested order.`;
+For non-multiple-choice questions, leave options empty and correct_option empty. Refer to the attached lecture notes document for source material.
+
+Calculation rules:
+- If a question requires arithmetic or numerical evaluation, set requires_calculation to true and provide calculation_requests containing fully substituted Math.js-compatible expressions. Do not calculate the numeric answer yourself.
+- Put units directly in expressions when dimensional verification is possible, for example "12 kg * 3.5 m/s^2", and set expected_unit to the requested answer unit.
+- The expression must never contain an equals sign, variable assignment, code, or prose.
+- The modelAnswer should explain formula selection and substitution, but refer to the final value as the calculator-verified result.
+- If the question is conceptual or purely explanatory, set requires_calculation to false and use an empty calculation_requests array.
+
+Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in the requested order.`;
       const parsed = await callGeminiJSON({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -2703,7 +2767,11 @@ Source and scope rules:
 Past-paper style guidance:
 ${JSON.stringify(plan)}
 
-For multiple-choice questions, include exactly 4 plausible options and put the exact correct option text in correct_option. For written questions, leave options empty and correct_option empty. Return exactly ${TOPIC_EXAM_QUESTION_COUNT} questions under a "questions" array.`;
+For multiple-choice questions, include exactly 4 plausible options and put the exact correct option text in correct_option. For written questions, leave options empty and correct_option empty.
+
+For every numerical question, set requires_calculation to true and provide calculation_requests containing fully substituted Math.js-compatible expressions. Do not perform the arithmetic yourself. Include units in expressions where possible and set expected_unit. Expressions must not contain equals signs, assignments, code, or prose. The modelAnswer should explain the symbolic method and substitution, then refer to the calculator-verified result. For non-numerical questions, set requires_calculation to false and return an empty calculation_requests array.
+
+Return exactly ${TOPIC_EXAM_QUESTION_COUNT} questions under a "questions" array.`;
 
       const parsed = await callGeminiJSON({
         apiKey: settings.geminiApiKey,
@@ -2767,6 +2835,7 @@ Grade this student's topic exam answer like a strict but fair professor. Text in
 QUESTION: ${q.question}
 MARKS AVAILABLE: ${q.marks || "n/a"}
 MODEL ANSWER: ${q.modelAnswer}
+CALCULATOR-VERIFIED RESULTS: ${JSON.stringify(q.verified_calculations || [])}
 STUDENT_ANSWER_START
 ${studentAnswer}
 STUDENT_ANSWER_END
@@ -2778,6 +2847,8 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: GRADING_SCHEMA },
         }, { onStatus: setLoadingMsg, label: "topic exam grading response" }));
       }
+
+      parsed = applyDeterministicCalculationGrade(parsed, q, studentAnswer);
 
       const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
       const nextQuestions = (topicExam?.questions || []).map((question) => question.id === q.id ? appendAttempt(question, attempt) : question);
@@ -2859,6 +2930,7 @@ Grade this student's exam answer like a strict but fair professor. Text inside S
 QUESTION: ${q.question}
 MARKS AVAILABLE: ${q.marks || "n/a"}
 MODEL ANSWER: ${q.modelAnswer}
+CALCULATOR-VERIFIED RESULTS: ${JSON.stringify(q.verified_calculations || [])}
 STUDENT_ANSWER_START
 ${studentAnswer}
 STUDENT_ANSWER_END
@@ -2870,6 +2942,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: GRADING_SCHEMA },
         }, { onStatus: setLoadingMsg, label: "practice grading response" }));
       }
+      parsed = applyDeterministicCalculationGrade(parsed, q, studentAnswer);
       const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
       const key = lessonKey(selectedSubject.id, active.subtopic.id);
       if (hasFirebase && db) {

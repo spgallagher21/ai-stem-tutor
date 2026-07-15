@@ -398,6 +398,15 @@ select:focus-visible {
 .uploaded-files-panel ul { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
 .uploaded-files-panel li { display: flex; justify-content: space-between; gap: 12px; padding-top: 8px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .uploaded-files-panel small { color: var(--text-muted); white-space: nowrap; }
+.verified-calculations { display: grid; gap: 10px; margin: 16px 0; padding: 14px; border: 1px solid color-mix(in srgb, var(--success) 55%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--success) 8%, var(--surface-2)); }
+.verified-calculations > div { display: grid; gap: 5px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--success) 30%, var(--border)); }
+.verified-calculations code { overflow-wrap: anywhere; white-space: normal; }
+.verified-calculations.paper { color: #1a1a1a; background: #edf8f0; border-color: #91c89f; }
+.verified-badge { display: inline-block; border-radius: 999px; padding: 3px 7px; background: var(--success); color: #fff; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.verified-calculations.paper .verified-badge { background: #18733a; }
+.verified-result { font-weight: 700; }
+.calculation-match { color: var(--success); }
+.calculation-mismatch { color: var(--danger); }
 
 @media (max-width: 720px) {
   .topic-exam-grid { grid-template-columns: 1fr !important; }
