@@ -14,6 +14,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  if (!await secureRequest(req, res, { limit: 8, maxBodyBytes: 25 * 1024 * 1024 })) return;
+
   const { apiKey: requestApiKey, displayName, mimeType = "application/pdf", data } = req.body || {};
   const apiKey = typeof requestApiKey === "string" && requestApiKey.trim()
     ? requestApiKey.trim()
@@ -21,10 +23,12 @@ export default async function handler(req, res) {
 
   if (!apiKey) return res.status(400).json({ error: "Enter your Gemini API key before uploading files." });
   if (!data) return res.status(400).json({ error: "Missing file data." });
+  if (mimeType !== "application/pdf") return res.status(400).json({ error: "Only PDF uploads are supported." });
+  try { validateBase64(data, 18 * 1024 * 1024); } catch (error) { return res.status(400).json({ error: error.message }); }
 
   try {
     const bytes = Buffer.from(data, "base64");
-    const start = await fetch(`${FILES_URL}?key=${encodeURIComponent(apiKey)}`, {
+    const start = await fetchWithTimeout(`${FILES_URL}?key=${encodeURIComponent(apiKey)}`, {
       method: "POST",
       headers: {
         "X-Goog-Upload-Protocol": "resumable",
@@ -34,7 +38,7 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ file: { display_name: displayName || "source.pdf" } }),
-    });
+    }, 45_000);
 
     if (!start.ok) {
       const details = await start.text();
@@ -43,8 +47,9 @@ export default async function handler(req, res) {
 
     const uploadUrl = start.headers.get("x-goog-upload-url");
     if (!uploadUrl) return res.status(502).json({ error: "Gemini did not return an upload URL." });
+    if (!/^https:\/\/[^/]*googleapis\.com\//i.test(uploadUrl)) return res.status(502).json({ error: "Gemini returned an invalid upload destination." });
 
-    const finish = await fetch(uploadUrl, {
+    const finish = await fetchWithTimeout(uploadUrl, {
       method: "POST",
       headers: {
         "Content-Length": String(bytes.length),
@@ -52,7 +57,7 @@ export default async function handler(req, res) {
         "X-Goog-Upload-Command": "upload, finalize",
       },
       body: bytes,
-    });
+    }, 60_000);
 
     const payload = await finish.json();
     if (!finish.ok) {
@@ -65,3 +70,4 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: err.message || "Gemini file upload failed." });
   }
 }
+import { fetchWithTimeout, secureRequest, validateBase64 } from "./_security.js";

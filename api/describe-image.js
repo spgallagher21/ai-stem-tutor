@@ -11,8 +11,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  if (!await secureRequest(req, res, { limit: 12, maxBodyBytes: 8 * 1024 * 1024 })) return;
+
   const { imageBase64 } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: "imageBase64 is required." });
+  try { validateBase64(imageBase64, 6 * 1024 * 1024); } catch (error) { return res.status(400).json({ error: error.message }); }
   if (!process.env.OPENROUTER_API_KEY) {
     return res.status(503).json({ error: "Image description is not configured." });
   }
@@ -23,7 +26,7 @@ export default async function handler(req, res) {
   for (let i = 0; i < MODELS.length; i += 1) {
     const model = MODELS[i];
     try {
-      const response = await fetch(OPENROUTER_URL, {
+      const response = await fetchWithTimeout(OPENROUTER_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -39,7 +42,7 @@ export default async function handler(req, res) {
             ],
           }],
         }),
-      });
+      }, 45_000);
 
       const data = await response.json();
       if (!response.ok || data.error) {
@@ -66,3 +69,4 @@ export default async function handler(req, res) {
 
   return res.status(502).json({ error: lastError });
 }
+import { fetchWithTimeout, secureRequest, validateBase64 } from "./_security.js";

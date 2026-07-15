@@ -53,3 +53,23 @@ export async function getLocalPdf(id) {
     };
   });
 }
+
+export async function deleteLocalPdf(id) {
+  await withStore("readwrite", (store) => store.delete(id));
+}
+
+export async function deleteLocalPdfsByPrefix(prefix) {
+  const db = await openPdfDb();
+  const ids = await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const request = tx.objectStore(STORE_NAME).getAllKeys();
+    request.onsuccess = () => resolve(request.result.filter((id) => String(id).startsWith(prefix)));
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+  });
+  await Promise.all(ids.map(deleteLocalPdf));
+}
+
+export function clearLocalPdfs() {
+  return withStore("readwrite", (store) => store.clear());
+}

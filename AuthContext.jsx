@@ -6,7 +6,7 @@ import {
   signInAnonymously,
   signInWithEmailAndPassword,
 } from "firebase/auth";
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { deleteField, doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseReady } from "./firebase";
 
 const AuthContext = createContext(null);
@@ -95,10 +95,11 @@ export async function getSettings(uid) {
 }
 
 export async function saveSettings(uid, settings) {
-  const payload = { ...settings, updatedAt: firebaseReady ? serverTimestamp() : Date.now() };
+  const { geminiApiKey: _secret, ...safeSettings } = settings;
+  const payload = { ...safeSettings, updatedAt: firebaseReady ? serverTimestamp() : Date.now() };
   if (!firebaseReady || !db || !uid) {
     localStorage.setItem("stem-settings", JSON.stringify(payload));
     return;
   }
-  await setDoc(doc(db, "users", uid, "settings", "app"), payload, { merge: true });
+  await setDoc(doc(db, "users", uid, "settings", "app"), { ...payload, geminiApiKey: deleteField() }, { merge: true });
 }
