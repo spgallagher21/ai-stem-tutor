@@ -28,8 +28,8 @@ import {
   MAX_INLINE_DOCUMENT_BYTES,
   arrayBufferToBase64,
   buildPageIndex,
-  extractPages,
   inlinePdfDocumentPart,
+  mergePdfSelections,
   rasterizePdfPage,
   scoreRelevantPages,
   termsFor,
@@ -574,15 +574,6 @@ ${quickMap || "No page-level text map was extracted."}
 
 Detailed sampled pages:
 ${pageDigest || "No selectable text was extracted from this PDF."}`;
-}
-
-function scorePageIndex(pageIndex = [], queryText = "") {
-  const terms = termsFor(queryText);
-  if (!terms.length) return 0;
-  return pageIndex.reduce((total, page) => {
-    const lower = (page.text || "").toLowerCase();
-    return total + terms.reduce((sum, term) => sum + lower.split(term).length - 1, 0);
-  }, 0);
 }
 
 function compactSourceIndexes(sourceIndexes = []) {
@@ -1421,6 +1412,10 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartTo
         <section className="card" style={{ padding: 20, marginBottom: 28 }}>
           <h2 className="heading" style={{ marginTop: 0 }}>Module source notes</h2>
           <p className="muted">Upload more lecture notes or past papers here. The module will preserve existing topics where possible, add new topics when the notes warrant it, and keep classes bite-sized.</p>
+          <div className="grid uploaded-files-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", margin: "18px 0" }}>
+            <div className="uploaded-files-panel"><strong>Uploaded lecture notes ({subject.meta?.sourceFiles?.length || 0})</strong>{subject.meta?.sourceFiles?.length ? <ul>{subject.meta.sourceFiles.map((file) => <li key={file.localPdfId || file.name}><span>{file.name}</span><small>{file.pageCount ? `${file.pageCount} pages` : "PDF"}</small></li>)}</ul> : <p className="muted">No lecture notes uploaded.</p>}</div>
+            <div className="uploaded-files-panel"><strong>Uploaded past papers ({subject.meta?.examFiles?.length || 0})</strong>{subject.meta?.examFiles?.length ? <ul>{subject.meta.examFiles.map((file) => <li key={file.localPdfId || file.name}><span>{file.name}</span><small>{file.pageCount ? `${file.pageCount} pages` : "PDF"}</small></li>)}</ul> : <p className="muted">No past papers uploaded.</p>}</div>
+          </div>
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
             <div>
               <label className="muted" style={{ fontSize: 13 }}>More lecture notes</label>
@@ -1527,7 +1522,6 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
         <p className="muted">A module is the folder for one course or unit. Upload one topic's lecture notes to start; you can add more note PDFs and past papers to the module at any time.</p>
         <p className="muted">For quicker processing and fewer API limit issues, upload notes topic by topic rather than selecting a whole semester of PDFs at once.</p>
         <p className="muted">PDFs are stored on this device. Your module, lessons, questions, and progress can sync through Firestore, but source PDFs must be re-uploaded on a different device before regenerating content there.</p>
-        <label className="muted" style={{ fontSize: 13 }}>Module title</label>
         <label className="muted" htmlFor="module-name">Module name</label>
         <input id="module-name" className="input" data-tour="moduleName" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 12px" }} />
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", marginBottom: 18 }}>
@@ -2275,27 +2269,27 @@ Return only topicGroups.`;
 
   const getDocumentContext = async (subject, { queryText, scoped = true, sourceKind = "notes", maxPages = 18 } = {}) => {
     const files = sourceKind === "exam" ? subject.meta?.examFiles || [] : subject.meta?.sourceFiles || [];
-    let source = files[0];
-    if (sourceKind === "notes" && scoped && files.length > 1) {
-      let best = { source: files[0], score: -1 };
-      for (const candidate of files) {
-        const localPdfId = candidate.localPdfId || candidate.path;
-        const stored = localPdfId ? await getLocalPdf(localPdfId) : null;
-        const score = scorePageIndex(stored?.pageIndex || candidate.pageIndex || [], queryText);
-        if (score > best.score) best = { source: candidate, score };
-      }
-      source = best.source;
+    if (!files.length) return null;
+
+    // Every uploaded PDF contributes pages. Previously only the single highest-scoring
+    // file was attached, which made earlier uploads appear to be replaced by newer ones.
+    const pagesPerFile = scoped ? Math.max(2, Math.floor(maxPages / files.length)) : null;
+    const selections = [];
+    for (const source of files) {
+      const { bytes, pageIndex } = await getLocalSource(source);
+      const pages = scoped && pageIndex.length
+        ? scoreRelevantPages(pageIndex, queryText, pagesPerFile)
+        : pageIndex.length ? pageIndex.map((page) => page.pageNum) : Array.from({ length: source.pageCount || 1 }, (_, index) => index + 1);
+      selections.push({ source, name: source.name, bytes, pageIndex, pages });
     }
-    if (!source) return null;
-    const { bytes, pageIndex } = await getLocalSource(source);
-    let payloadBytes = bytes;
-    let pages = [];
-    if (scoped && pageIndex.length) {
-      pages = scoreRelevantPages(pageIndex, queryText, maxPages);
-      payloadBytes = await extractPages(bytes, pages);
-    }
+
+    const merged = await mergePdfSelections(selections);
+    const payloadBytes = merged.bytes;
+    const pages = merged.pageMap.filter((item) => !item.divider).map((item) => item.mergedPage);
+    const source = files.length === 1 ? files[0] : { name: `${files.length} uploaded PDFs`, mimeType: "application/pdf" };
+    const pageIndex = selections.flatMap((item) => item.pageIndex);
     if (payloadBytes.byteLength <= MAX_INLINE_DOCUMENT_BYTES) {
-      return { documentPart: inlinePdfDocumentPart(payloadBytes), source, bytes, pageIndex, pages };
+      return { documentPart: inlinePdfDocumentPart(payloadBytes), source, sources: files, bytes: payloadBytes, pageIndex, pages, pageMap: merged.pageMap };
     }
 
     const token = await auth?.currentUser?.getIdToken();
@@ -2311,7 +2305,7 @@ Return only topicGroups.`;
     });
     const data = await uploadRes.json();
     if (!uploadRes.ok || data.error) throw new Error(data.error || "Could not upload PDF to Gemini.");
-    return { documentPart: { fileData: { mimeType: source.mimeType || "application/pdf", fileUri: data.fileUri } }, source, bytes, pageIndex, pages };
+    return { documentPart: { fileData: { mimeType: "application/pdf", fileUri: data.fileUri } }, source, sources: files, bytes: payloadBytes, pageIndex, pages, pageMap: merged.pageMap };
   };
 
   const getDocumentPart = async (subject, options = {}) => {
@@ -2516,8 +2510,8 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
       setLoadingMsg("Drafting your lesson...");
       const sourceContext = findRelevantSourceContext(subject, topic, subtopic);
       const documentContext = await getDocumentContext(subject, { queryText: `${topic.name} ${subtopic.name}`, scoped: true });
-      const scopedPageContext = documentContext?.pages?.length
-        ? `The attached scoped PDF contains these original lecture-note page numbers, in order: ${documentContext.pages.join(", ")}. If you flag image pages, report the original page number from this list, not the extracted PDF page position.`
+      const scopedPageContext = documentContext?.pageMap?.length
+        ? `The attached PDF combines every uploaded source that is relevant to this class. It contains divider pages naming each source file. Page mapping in the combined attachment: ${documentContext.pageMap.filter((item) => !item.divider).map((item) => `combined page ${item.mergedPage} = ${item.fileName} original page ${item.originalPage}`).join("; ")}. Cite the source filename and original page in source_refs. For flagged_image_pages, use the combined attachment page number so the app can render it.`
         : "No original page-number mapping is available; do not flag image pages.";
       const draftPrompt = `${TUTOR_VOICE_PROMPT}
 

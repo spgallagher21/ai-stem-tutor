@@ -394,6 +394,10 @@ select:focus-visible {
 .source-chip { border: 1px solid #c9c0b2; border-radius: 999px; padding: 6px 10px; font-size: 12px; }
 .rubric { display: grid; gap: 8px; margin: 16px 0; }
 .rubric > div { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.uploaded-files-panel { padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.uploaded-files-panel ul { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+.uploaded-files-panel li { display: flex; justify-content: space-between; gap: 12px; padding-top: 8px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.uploaded-files-panel small { color: var(--text-muted); white-space: nowrap; }
 
 @media (max-width: 720px) {
   .topic-exam-grid { grid-template-columns: 1fr !important; }
