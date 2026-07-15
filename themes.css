@@ -389,6 +389,17 @@ select:focus-visible {
   margin-top: 24px;
 }
 
+.source-panel { margin-top: 24px; padding: 16px; border: 1px solid #d8d1c5; border-radius: 8px; background: #f7f2e9; }
+.source-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.source-chip { border: 1px solid #c9c0b2; border-radius: 999px; padding: 6px 10px; font-size: 12px; }
+.rubric { display: grid; gap: 8px; margin: 16px 0; }
+.rubric > div { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+
+@media (max-width: 720px) {
+  .topic-exam-grid { grid-template-columns: 1fr !important; }
+  .app-shell { padding-inline: 12px; }
+}
+
 .paper-muted {
   color: #6b6459;
 }

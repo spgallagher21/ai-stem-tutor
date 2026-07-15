@@ -1,3 +1,5 @@
+import { fetchWithTimeout, secureRequest } from "./_security.js";
+
 // Vercel serverless function. Users bring their own Gemini API key.
 // The key is forwarded only for this request and is not stored by the app.
 
@@ -31,6 +33,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  if (!await secureRequest(req, res, { limit: 24, maxBodyBytes: 20 * 1024 * 1024 })) return;
+
   const { contents, generationConfig, apiKey: requestApiKey, documentPart, tools } = req.body || {};
   const apiKey = typeof requestApiKey === "string" && requestApiKey.trim()
     ? requestApiKey.trim()
@@ -44,6 +48,9 @@ export default async function handler(req, res) {
 
   if (!contents) {
     return res.status(400).json({ error: "Missing 'contents' in request body." });
+  }
+  if (!Array.isArray(contents) || contents.length > 12 || JSON.stringify(contents).length > 18_000_000) {
+    return res.status(400).json({ error: "Invalid or oversized prompt." });
   }
 
   const payloadContents = documentPart && Array.isArray(contents) && contents[0]?.parts
@@ -71,11 +78,11 @@ export default async function handler(req, res) {
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const r = await fetch(`${geminiUrl}?key=${encodeURIComponent(apiKey)}`, {
+        const r = await fetchWithTimeout(`${geminiUrl}?key=${encodeURIComponent(apiKey)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-        });
+        }, 60_000);
 
         const responseText = await r.text();
         let data;
