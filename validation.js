@@ -64,3 +64,16 @@ export function validateCurriculum(value) {
   return value;
 }
 
+export function validateNotesAnswer(value, pageMap = []) {
+  if (!value || !String(value.answer || "").trim()) throw new Error("The AI returned an empty notes answer.");
+  const normalize = (text) => String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const validPages = new Set(pageMap.filter((item) => !item.divider).map((item) => `${normalize(item.fileName)}:${Number(item.originalPage)}`));
+  const citations = (value.citations || []).filter((citation) => validPages.has(`${normalize(citation.file_name)}:${Number(citation.page)}`)).slice(0, 12);
+  return {
+    answer: String(value.answer).trim(),
+    supported: Boolean(value.supported) && citations.length > 0,
+    uncertainty: String(value.uncertainty || ""),
+    citations,
+    follow_up_questions: (value.follow_up_questions || []).map(String).slice(0, 3),
+  };
+}
