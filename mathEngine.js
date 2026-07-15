@@ -19,7 +19,7 @@ function normalizedPrecision(value) {
 }
 
 export function calculateExpression(request) {
-  const expression = String(request?.expression || "").trim();
+  const expression = String(request?.expression || "").trim().replaceAll("×", "*").replaceAll("÷", "/").replaceAll("−", "-").replace(/\s+·\s+/g, " * ");
   if (!expression || expression.length > 500) throw new Error("A calculation must contain a short expression.");
   const node = math.parse(expression);
   assertSafeNode(node);
@@ -50,7 +50,16 @@ export function calculateExpression(request) {
 export function verifyCalculationRequests(requests = [], { required = false } = {}) {
   const list = Array.isArray(requests) ? requests.slice(0, 12) : [];
   if (required && !list.length) throw new Error("The AI created a numerical problem without providing a calculator expression.");
-  return list.map(calculateExpression);
+  const verified = [];
+  for (const request of list) {
+    try {
+      verified.push(calculateExpression(request));
+    } catch {
+      // One malformed optional intermediate calculation should not void an otherwise usable lesson or question.
+    }
+  }
+  if (required && !verified.length) throw new Error("The numerical question did not contain a calculator-compatible expression.");
+  return verified;
 }
 
 export function numericAnswersMatch(studentValue, verifiedCalculation, tolerancePercent = 1) {
