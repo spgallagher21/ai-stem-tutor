@@ -1,4 +1,4 @@
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 export const MAX_INLINE_DOCUMENT_BYTES = 15 * 1024 * 1024;
 
@@ -68,6 +68,35 @@ export async function extractPages(sourcePdfBytes, pageNumbers) {
   const copiedPages = await newDoc.copyPages(srcDoc, safePages.map((n) => n - 1));
   copiedPages.forEach((page) => newDoc.addPage(page));
   return newDoc.save();
+}
+
+export async function mergePdfSelections(selections) {
+  const merged = await PDFDocument.create();
+  const font = await merged.embedFont(StandardFonts.Helvetica);
+  const bold = await merged.embedFont(StandardFonts.HelveticaBold);
+  const pageMap = [];
+
+  for (const selection of selections) {
+    const source = await PDFDocument.load(selection.bytes);
+    const safePages = [...new Set(selection.pages || [])]
+      .filter((page) => page >= 1 && page <= source.getPageCount())
+      .sort((a, b) => a - b);
+    if (!safePages.length) continue;
+
+    const divider = merged.addPage([612, 792]);
+    divider.drawText("StudyLoop source document", { x: 54, y: 710, size: 14, font, color: rgb(0.3, 0.3, 0.3) });
+    divider.drawText(String(selection.name || "Lecture notes"), { x: 54, y: 665, size: 22, font: bold, color: rgb(0.08, 0.08, 0.12), maxWidth: 500 });
+    divider.drawText(`Original pages included: ${safePages.join(", ")}`, { x: 54, y: 625, size: 11, font, color: rgb(0.25, 0.25, 0.3), maxWidth: 500 });
+    pageMap.push({ mergedPage: merged.getPageCount(), fileName: selection.name, originalPage: null, divider: true });
+
+    const copied = await merged.copyPages(source, safePages.map((page) => page - 1));
+    copied.forEach((page, index) => {
+      merged.addPage(page);
+      pageMap.push({ mergedPage: merged.getPageCount(), fileName: selection.name, originalPage: safePages[index] });
+    });
+  }
+
+  return { bytes: await merged.save(), pageMap };
 }
 
 export async function rasterizePdfPage(sourcePdfBytes, pageNumber, { maxWidth = 1000, quality = 0.7 } = {}) {
