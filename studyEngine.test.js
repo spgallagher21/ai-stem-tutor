@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildStudySession, dueSubtopics, scheduleReview } from "./studyEngine";
+import { assessmentScopeItems, buildDeadlinePlan, buildStudySession, dueSubtopics, scheduleReview } from "./studyEngine";
 
 describe("spaced review scheduling", () => {
   it("schedules weak work for tomorrow", () => expect(scheduleReview({}, { partial_credit_percent: 40 }, 1000).dueAt).toBe(1000 + 86_400_000));
@@ -8,5 +8,18 @@ describe("spaced review scheduling", () => {
     const subjects = [{ meta: { curriculum: { topics: [{ name: "T", subtopics: [{ id: "s", name: "S", estimatedMinutes: 10 }] }] } }, masteryLog: { s: { status: "attempted", dueAt: 1 } } }];
     expect(dueSubtopics(subjects, 2)).toHaveLength(1);
     expect(buildStudySession(subjects, 15, 2).plannedMinutes).toBe(10);
+  });
+  it("maps full-module and selected-topic assessment scopes", () => {
+    const subject = { id: "module", meta: { curriculum: { topics: [{ id: "t1", subtopics: [{ id: "s1", estimatedMinutes: 20 }] }, { id: "t2", subtopics: [{ id: "s2", estimatedMinutes: 30 }] }] } }, masteryLog: {} };
+    expect(assessmentScopeItems({ fullModule: true }, subject)).toHaveLength(2);
+    expect(assessmentScopeItems({ topicIds: ["t2"] }, subject).map((item) => item.subtopic.id)).toEqual(["s2"]);
+  });
+  it("prioritizes the nearest deadlines and excludes independently learned lessons", () => {
+    const now = 1_000_000;
+    const subject = { id: "module", meta: { curriculum: { topics: [{ id: "t1", subtopics: [{ id: "s1", estimatedMinutes: 20 }, { id: "s2", estimatedMinutes: 30 }] }] } }, masteryLog: { s1: { status: "mastered", learnedIndependently: true } } };
+    const plan = buildDeadlinePlan([{ id: "later", subjectId: "module", title: "Exam", dueAt: now + 10 * 86_400_000, fullModule: true }, { id: "soon", subjectId: "module", title: "Quiz", dueAt: now + 2 * 86_400_000, fullModule: true }], [subject], { now });
+    expect(plan[0].id).toBe("soon");
+    expect(plan[0].remaining.map((item) => item.subtopic.id)).toEqual(["s2"]);
+    expect(plan.reduce((sum, item) => sum + item.todayMinutes, 0)).toBe(30);
   });
 });
