@@ -422,12 +422,37 @@ select:focus-visible {
 .follow-ups .btn { height: auto; min-height: 36px; text-align: left; }
 .notes-question-form { position: sticky; bottom: 10px; display: grid; gap: 9px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 30px var(--shadow); }
 .notes-question-form .btn { justify-self: end; }
+.assessment-layout { display: grid; grid-template-columns: minmax(300px, 0.9fr) minmax(340px, 1.1fr); gap: 22px; align-items: start; }
+.assessment-form { display: grid; gap: 9px; padding: 22px; }
+.assessment-basics { grid-template-columns: 1fr 1.4fr; }
+.assessment-form label { margin-top: 5px; font-weight: 600; }
+.check-row { display: flex; align-items: center; gap: 9px; padding: 10px 0; }
+.check-row input { width: 18px; height: 18px; }
+.multi-select { min-height: 130px; }
+.assessment-list { display: grid; gap: 14px; }
+.assessment-card { display: flex; justify-content: space-between; gap: 18px; padding: 20px; }
+.assessment-card h3 { margin: 8px 0 4px; }
+.assessment-card.completed { opacity: 0.68; }
+.assessment-actions { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.assessment-type { display: inline-block; padding: 4px 8px; border-radius: 999px; color: var(--interactive-text); background: var(--interactive); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.assessment-type.assignment { background: var(--accent-2); }
+.assessment-type.test { background: var(--warning); color: #17120a; }
+.deadline-recommendations { display: grid; gap: 10px; margin: 14px 0; }
+.deadline-recommendation { display: flex; justify-content: space-between; gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--border); border-left: 4px solid var(--accent-2); border-radius: 8px; background: var(--surface-2); }
+.deadline-recommendation.urgent { border-left-color: var(--danger); }
+.deadline-recommendation.soon { border-left-color: var(--warning); }
+.deadline-recommendation > div { display: grid; gap: 3px; }
+.deadline-recommendation span, .deadline-recommendation small { color: var(--text-muted); }
+.independent-button { width: 100%; min-height: 34px; margin-top: 10px; padding: 6px 8px; font-size: 12px; }
 
 @media (max-width: 720px) {
   .topic-exam-grid { grid-template-columns: 1fr !important; }
   .app-shell { padding-inline: 12px; }
   .notes-assistant-header { align-items: flex-start; flex-direction: column; }
   .notes-message { max-width: 100%; }
+  .assessment-layout { grid-template-columns: 1fr; }
+  .assessment-basics { grid-template-columns: 1fr; }
+  .assessment-card, .deadline-recommendation { align-items: stretch; flex-direction: column; }
 }
 
 .paper-muted {

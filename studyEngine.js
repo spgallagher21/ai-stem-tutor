@@ -36,3 +36,42 @@ export function buildStudySession(subjects, minutes = 30, now = Date.now()) {
   return { minutes, plannedMinutes: used, items: selected };
 }
 
+export function assessmentScopeItems(assessment, subject) {
+  if (!assessment || !subject) return [];
+  const selectedTopics = new Set([...(assessment.topicIds || []), ...(assessment.resolvedTopicIds || [])]);
+  const selectedLessons = new Set([...(assessment.subtopicIds || []), ...(assessment.resolvedSubtopicIds || [])]);
+  const all = (subject.meta?.curriculum?.topics || []).flatMap((topic) => (topic.subtopics || []).map((subtopic) => ({ subject, topic, subtopic, mastery: subject.masteryLog?.[subtopic.id] || {} })));
+  if (assessment.fullModule) return all;
+  return all.filter((item) => selectedTopics.has(item.topic.id) || selectedLessons.has(item.subtopic.id));
+}
+
+export function buildDeadlinePlan(assessments, subjects, { now = Date.now(), sessionMinutes = 30, maxAssessments = 3 } = {}) {
+  const subjectById = new Map(subjects.map((subject) => [subject.id, subject]));
+  const plans = (assessments || [])
+    .filter((assessment) => assessment.status !== "completed" && Number(assessment.dueAt) >= now - DAY)
+    .map((assessment) => {
+      const subject = subjectById.get(assessment.subjectId);
+      const scope = assessmentScopeItems(assessment, subject);
+      const remaining = scope.filter((item) => item.mastery.status !== "mastered");
+      const remainingMinutes = remaining.reduce((sum, item) => sum + Math.max(5, Number(item.subtopic.estimatedMinutes || 10)), 0);
+      const daysRemaining = Math.max(0, Math.ceil((Number(assessment.dueAt) - now) / DAY));
+      const studyDays = Math.max(1, daysRemaining);
+      const dailyMinutes = Math.ceil(remainingMinutes / studyDays / 5) * 5;
+      const urgency = daysRemaining <= 2 ? "urgent" : daysRemaining <= 7 ? "soon" : "planned";
+      const recommendedItems = remaining.slice(0, Math.max(1, Math.floor(sessionMinutes / 10)));
+      return { ...assessment, subject, scope, remaining, remainingMinutes, daysRemaining, dailyMinutes, urgency, recommendedItems, completedCount: scope.length - remaining.length, totalCount: scope.length };
+    })
+    .sort((a, b) => a.daysRemaining - b.daysRemaining || b.remainingMinutes - a.remainingMinutes)
+    .slice(0, maxAssessments);
+  const weights = plans.map((plan) => Math.max(1, Math.min(plan.dailyMinutes || 1, sessionMinutes)) * (plan.urgency === "urgent" ? 2 : plan.urgency === "soon" ? 1.4 : 1));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+  const minimum = sessionMinutes >= plans.length * 5 ? 5 : 0;
+  const flexibleBudget = Math.max(0, sessionMinutes - minimum * plans.length);
+  let allocated = 0;
+  return plans.map((plan, index) => {
+    const remainingBudget = Math.max(0, sessionMinutes - allocated);
+    const todayMinutes = index === plans.length - 1 ? remainingBudget : Math.min(remainingBudget, minimum + Math.round(flexibleBudget * weights[index] / totalWeight / 5) * 5);
+    allocated += todayMinutes;
+    return { ...plan, todayMinutes };
+  });
+}
