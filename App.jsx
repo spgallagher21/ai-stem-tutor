@@ -543,38 +543,42 @@ function appendAttempt(question, attempt) {
 function isBadMultipleChoiceOption(option) {
   const normalized = String(option || "").trim().toLowerCase().replace(/[_\s-]+/g, "_");
   const schemaWords = new Set(["option", "options", "correct_option", "correct", "difficulty", "mark", "marks", "modelanswer", "model_answer", "hint", "question", "type"]);
-  return !normalized || normalized.length < 3 || /^\d+$/.test(normalized) || schemaWords.has(normalized);
+  return !normalized || schemaWords.has(normalized);
 }
 
-function normalizeQuestionBatch(rawQuestions = [], { expectedCount = QUESTION_BATCH_SIZE } = {}) {
-  const normalized = rawQuestions
-    .map((question) => {
-      if (question?.type !== "multiple_choice") {
-        return { ...question, options: [], correct_option: "" };
-      }
-      const options = [...new Set((question.options || []).map((option) => String(option || "").trim()).filter(Boolean))];
-      const correct = String(question.correct_option || "").trim();
-      if (
-        options.length !== 4 ||
-        options.some(isBadMultipleChoiceOption) ||
-        isBadMultipleChoiceOption(correct) ||
-        !options.includes(correct)
-      ) {
-        return null;
-      }
-      return { ...question, options, correct_option: correct };
-    })
-    .filter(Boolean)
-    .map(validateQuestion)
-    .map((question) => ({
-      ...question,
-      verified_calculations: verifyCalculationRequests(question.calculation_requests, { required: question.requires_calculation }),
-    }))
-    .map(assertQuestionCalculation);
+function resolveCorrectOption(options, rawCorrect) {
+  const correct = String(rawCorrect || "").trim();
+  if (options.includes(correct)) return correct;
+  const letterMatch = correct.match(/^(?:option\s*)?([a-d])(?:[.):\s].*)?$/i);
+  if (letterMatch) return options[letterMatch[1].toUpperCase().charCodeAt(0) - 65] || "";
+  const numberMatch = correct.match(/^(?:option\s*)?([1-4])(?:[.):\s].*)?$/i);
+  if (numberMatch) return options[Number(numberMatch[1]) - 1] || "";
+  const clean = (value) => String(value).trim().toLowerCase().replace(/^[a-d1-4][.):]\s*/i, "").replace(/\s+/g, " ");
+  return options.find((option) => clean(option) === clean(correct)) || "";
+}
 
-  if (normalized.length < expectedCount) {
-    throw new Error("The AI returned a malformed multiple-choice question. Try generating again.");
+export function normalizeQuestionBatch(rawQuestions = [], { expectedCount = QUESTION_BATCH_SIZE } = {}) {
+  const normalized = [];
+  const errors = [];
+  for (const rawQuestion of rawQuestions) {
+    try {
+      let question = rawQuestion;
+      if (question?.type !== "multiple_choice") {
+        question = { ...question, options: [], correct_option: "" };
+      } else {
+        const options = [...new Set((question.options || []).map((option) => String(option || "").trim()).filter(Boolean))];
+        const correct = resolveCorrectOption(options, question.correct_option);
+        if (options.length !== 4 || options.some(isBadMultipleChoiceOption) || !correct) throw new Error("malformed answer choices");
+        question = { ...question, options, correct_option: correct };
+      }
+      question = validateQuestion(question);
+      question = { ...question, verified_calculations: verifyCalculationRequests(question.calculation_requests, { required: question.requires_calculation }) };
+      normalized.push(assertQuestionCalculation(question));
+    } catch (error) {
+      errors.push(error.message);
+    }
   }
+  if (!normalized.length) throw new Error(`The AI could not produce a usable question. ${errors[0] || "Please try again."}`);
   return normalized.slice(0, expectedCount);
 }
 

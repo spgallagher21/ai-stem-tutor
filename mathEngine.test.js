@@ -9,6 +9,8 @@ describe("deterministic maths pipeline", () => {
     expect(result.verified).toBe(true);
   });
   it("rejects assignments and unsafe operations", () => expect(() => calculateExpression({ expression: "x = 4" })).toThrow());
+  it("normalizes common multiplication symbols", () => expect(calculateExpression({ expression: "6 × 7" }).numericValue).toBe(42));
+  it("keeps valid requests when an optional request is malformed", () => expect(verifyCalculationRequests([{ expression: "x = 4" }, { expression: "6 * 7" }])).toHaveLength(1));
   it("requires calculator requests for numerical questions", () => expect(() => verifyCalculationRequests([], { required: true })).toThrow());
   it("checks generated multiple-choice answers against the calculator", () => {
     const calculation = calculateExpression({ expression: "6 * 7" });
