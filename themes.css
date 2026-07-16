@@ -444,6 +444,9 @@ select:focus-visible {
 .deadline-recommendation > div { display: grid; gap: 3px; }
 .deadline-recommendation span, .deadline-recommendation small { color: var(--text-muted); }
 .independent-button { width: 100%; min-height: 34px; margin-top: 10px; padding: 6px 8px; font-size: 12px; }
+.handwriting-upload { display: grid; gap: 7px; margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.handwriting-upload label { font-weight: 600; }
+.handwriting-upload small { line-height: 1.45; }
 
 @media (max-width: 720px) {
   .topic-exam-grid { grid-template-columns: 1fr !important; }

@@ -860,6 +860,30 @@ async function describeImage(imageBase64, { onStatus } = {}) {
   return data;
 }
 
+async function transcribeMathImage(imageBase64) {
+  const token = await auth?.currentUser?.getIdToken();
+  const res = await fetch(DESCRIBE_IMAGE_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ imageBase64, mode: "math_answer" }) });
+  const data = await res.json();
+  if (!res.ok || data.error || !data.reliable) throw new Error(data.error || "The handwriting could not be verified reliably.");
+  return data;
+}
+
+async function prepareAnswerImage(file) {
+  if (!file?.type?.startsWith("image/")) throw new Error("Choose a photo or image file.");
+  if (file.size > 8 * 1024 * 1024) throw new Error("The image is too large. Use a file smaller than 8 MB.");
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise((resolve, reject) => { const element = new Image(); element.onload = () => resolve(element); element.onerror = () => reject(new Error("The image could not be opened.")); element.src = url; });
+    if (image.naturalWidth < 700 || image.naturalHeight < 500) throw new Error("The photo resolution is too low. Retake it closer to the page in good light.");
+    const scale = Math.min(1, 2200 / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(image.naturalWidth * scale); canvas.height = Math.round(image.naturalHeight * scale);
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#fff"; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.92).split(",")[1];
+  } finally { URL.revokeObjectURL(url); }
+}
+
 async function callGemini({ contents, generationConfig, apiKey, documentPart, tools }, { retries = 0, onStatus } = {}) {
   const trimmedApiKey = (apiKey || "").trim();
   if (!trimmedApiKey) throw new Error("Enter your Gemini API key before using the tutor.");
@@ -958,6 +982,25 @@ const MathRenderer = ({ text, paper = false }) => (
     </ReactMarkdown>
   </div>
 );
+
+function HandwrittenAnswerUpload({ id, disabled, setStudentAnswer }) {
+  const [status, setStatus] = useState("");
+  const [working, setWorking] = useState(false);
+  const read = async (file) => {
+    if (!file) return;
+    setWorking(true); setStatus("Checking image quality…");
+    try {
+      const imageBase64 = await prepareAnswerImage(file);
+      setStatus("Transcribing and independently verifying every symbol…");
+      const result = await transcribeMathImage(imageBase64);
+      setStudentAnswer((value) => `${value}${value ? "\n\n" : ""}${result.transcription}`);
+      setStatus(`Verified transcription inserted (${Math.round(Math.min(result.confidence, result.verifierConfidence) * 100)}% confidence). Check it before submitting.`);
+    } catch (error) {
+      setStatus(`${error.message} Nothing was added to your answer; type it instead or retake the photo.`);
+    } finally { setWorking(false); }
+  };
+  return <div className="handwriting-upload"><label htmlFor={id}>Upload handwritten maths <span className="muted">(optional)</span></label><input id={id} className="input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={disabled || working} onChange={(event) => read(event.target.files?.[0])} /><small className={status.includes("Nothing was added") ? "calculation-mismatch" : "muted"} role="status">{status || "Use a clear, straight-on photo in good lighting. Uncertain transcriptions are rejected."}</small></div>;
+}
 
 const MermaidRenderer = ({ chart, paper = false }) => {
   const [svg, setSvg] = useState("");
@@ -1869,12 +1912,6 @@ function LearnView({
   const inPractice = phase === "question" || phase === "bank";
   const [confidence, setConfidence] = useState(3);
   const [showHint, setShowHint] = useState(false);
-  const readHandwritten = async (file) => {
-    if (!file) return;
-    const imageBase64 = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = reject; reader.readAsDataURL(file); });
-    const result = await describeImage(imageBase64);
-    setStudentAnswer((value) => `${value}${value ? "\n\n" : ""}[Transcribed handwritten working]\n${result.description}`);
-  };
 
   return (
     <div className="app-shell">
@@ -1929,7 +1966,7 @@ function LearnView({
                 ))}
               </div>
             ) : (
-              <><label htmlFor="practice-answer" className="muted">Your answer</label><textarea id="practice-answer" className="input" value={studentAnswer} onChange={(e) => setStudentAnswer(e.target.value)} disabled={!!feedback} placeholder="Explain your reasoning and show each step." style={{ minHeight: 150 }} /><label htmlFor="handwritten-answer" className="muted" style={{ display: "block", marginTop: 10 }}>Attach handwritten working (optional)</label><input id="handwritten-answer" className="input" type="file" accept="image/*" disabled={!!feedback} onChange={(e) => readHandwritten(e.target.files?.[0])} /></>
+              <><label htmlFor="practice-answer" className="muted">Your answer</label><textarea id="practice-answer" className="input" value={studentAnswer} onChange={(e) => setStudentAnswer(e.target.value)} disabled={!!feedback} placeholder="Explain your reasoning and show each step." style={{ minHeight: 150 }} /><HandwrittenAnswerUpload id="practice-handwriting" disabled={!!feedback} setStudentAnswer={setStudentAnswer} /></>
             )}
             {!feedback ? (
               <><div style={{ display: "flex", gap: 10, marginTop: 14 }}><button className="btn secondary" onClick={() => setShowHint(true)}>Concept hint</button></div>{showHint && <p className="muted" role="status">{q.hint || "Review the core definition, assumptions, and first applicable equation."}</p>}<label htmlFor="confidence" className="muted" style={{ display: "block", marginTop: 16 }}>Confidence before checking: {confidence}/5</label><input id="confidence" type="range" min="1" max="5" value={confidence} onChange={(e) => setConfidence(Number(e.target.value))} style={{ width: "100%" }} /><button className="btn" onClick={onSubmitAnswer} style={{ width: "100%", marginTop: 12 }}>Submit</button></>
@@ -2022,7 +2059,7 @@ function TopicExamView({
                   ))}
                 </div>
               ) : (
-                <><label htmlFor="exam-answer" className="muted">Your answer</label><textarea id="exam-answer" className="input" value={studentAnswer} onChange={(e) => setStudentAnswer(e.target.value)} disabled={!!feedback} placeholder="Show all reasoning required for marks." style={{ minHeight: 180 }} /></>
+                <><label htmlFor="exam-answer" className="muted">Your answer</label><textarea id="exam-answer" className="input" value={studentAnswer} onChange={(e) => setStudentAnswer(e.target.value)} disabled={!!feedback} placeholder="Show all reasoning required for marks." style={{ minHeight: 180 }} /><HandwrittenAnswerUpload id="exam-handwriting" disabled={!!feedback} setStudentAnswer={setStudentAnswer} /></>
               )}
               {!feedback ? (
                 <button className="btn" onClick={onSubmitAnswer} style={{ width: "100%", marginTop: 18 }}>Submit</button>
