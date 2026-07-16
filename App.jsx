@@ -23,6 +23,7 @@ import { auth, db, firebaseReady } from "./firebase";
 import { clearLocalPdfs, deleteLocalPdfsByPrefix, getLocalPdf, saveLocalPdf } from "./localPdfStore";
 import { deleteArtifacts, exportLearningData, getArtifact, listArtifacts, saveArtifact } from "./studyStore";
 import { buildDeadlinePlan, buildStudySession, dueSubtopics, scheduleReview } from "./studyEngine";
+import { CONFIDENCE_LABELS, DEFAULT_CONFIDENCE, confidenceFlag, confidenceInsight, normalizeConfidence } from "./confidence";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
 import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
 import {
@@ -1451,6 +1452,9 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
       {subjects.map((subject) => {
         const progress = computeSubjectProgress(subject.meta?.curriculum, subject.masteryLog);
         const remaining = (subject.meta?.curriculum?.topics || []).reduce((sum, topic) => sum + (topic.subtopics || []).reduce((inner, st) => inner + (subject.masteryLog?.[st.id]?.status === "mastered" ? 0 : st.estimatedMinutes || 10), 0), 0);
+        const masteryEntries = Object.values(subject.masteryLog || {});
+        const confidentMisconceptions = masteryEntries.filter((entry) => entry.confidenceSignal === "confident_misconception").length;
+        const uncertainAnswers = masteryEntries.filter((entry) => entry.confidenceSignal === "uncertain_correct").length;
         return (
           <div key={subject.id} className="card" data-tour="subjectCard" style={{ padding: 18 }}>
             <button className="btn ghost" onClick={() => onOpenSubject(subject)} style={{ width: "100%", textAlign: "left", padding: 0, minHeight: "auto", color: "var(--text)" }}>
@@ -1459,6 +1463,7 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
               <div className="progress-bar"><span style={{ width: `${progress}%` }} /></div>
               <div className="muted mono" style={{ fontSize: 13, marginTop: 10 }}>{progress}% complete - {remaining} min left</div>
               <div className="muted" style={{ fontSize: 13, marginTop: 8 }}>{subject.meta?.curriculum?.topics?.length || 0} topic{subject.meta?.curriculum?.topics?.length === 1 ? "" : "s"}</div>
+              {(confidentMisconceptions > 0 || uncertainAnswers > 0) && <div style={{ fontSize: 13, marginTop: 8, color: confidentMisconceptions ? "var(--warning)" : "var(--muted)" }}>{confidentMisconceptions > 0 ? `${confidentMisconceptions} confident misconception${confidentMisconceptions === 1 ? "" : "s"} prioritised` : `${uncertainAnswers} correct-but-uncertain lesson${uncertainAnswers === 1 ? "" : "s"}`}</div>}
             </button>
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button className="btn ghost" onClick={() => onRenameSubject(subject)} style={{ flex: 1 }}>Rename</button>
@@ -1586,6 +1591,8 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartTo
                         <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
                           {entry?.learnedIndependently ? "Completed independently" : entry?.status === "mastered" ? "Mastered" : entry?.status === "attempted" ? "Needs review" : hasLesson ? "Lesson ready" : "Lesson not generated yet"}
                         </div>
+                        {entry?.confidenceSignal === "confident_misconception" && <div style={{ color: "var(--warning)", fontSize: 13, marginTop: 8 }}>Confident misconception · prioritised for review</div>}
+                        {entry?.confidenceSignal === "uncertain_correct" && <div className="muted" style={{ fontSize: 13, marginTop: 8 }}>Correct, but low confidence · reinforcement scheduled</div>}
                         {(entry?.status !== "mastered" || entry?.learnedIndependently) && <button className="btn ghost independent-button" onClick={(event) => { event.stopPropagation(); onMarkIndependent(st); }} onKeyDown={(event) => event.stopPropagation()}>{entry?.learnedIndependently ? "Undo independent completion" : "Mark learned independently"}</button>}
                       </div>
                     );
@@ -1902,15 +1909,34 @@ function QuestionBankPanel({ bank, onOpenQuestion }) {
   );
 }
 
+function ConfidenceSlider({ value, onChange, id = "answer-confidence" }) {
+  const confidence = normalizeConfidence(value);
+  return (
+    <div className="card" style={{ padding: 14, marginTop: 16, background: "var(--surface-2)" }}>
+      <label htmlFor={id} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+        <strong>How confident are you?</strong>
+        <span className="mono" style={{ color: "var(--accent-text)" }}>{confidence}/5 · {CONFIDENCE_LABELS[confidence]}</span>
+      </label>
+      <input id={id} type="range" min="1" max="5" step="1" value={confidence} onChange={(event) => onChange(Number(event.target.value))} style={{ width: "100%", marginTop: 10 }} />
+      <div className="muted" style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>1 · Guessing</span><span>5 · Certain</span></div>
+      <p className="muted" style={{ fontSize: 13, margin: "10px 0 0" }}>Choose this before checking. It will adjust review timing, but it will never change your mark.</p>
+    </div>
+  );
+}
+
+function ConfidenceFeedback({ feedback }) {
+  if (!feedback?.confidence) return null;
+  return <p className="muted"><strong>Confidence check ({feedback.confidence}/5 · {CONFIDENCE_LABELS[feedback.confidence]}):</strong> {feedback.confidence_insight || confidenceInsight(feedback)}</p>;
+}
+
 function LearnView({
   subject, active, lesson, phase, setPhase, onBack, onRegenerate, onFetchQuestion, onSubmitAnswer,
   studentAnswer, setStudentAnswer, selectedOption, setSelectedOption, feedback, loading,
   questionBank, viewingBankQuestion, onOpenBankQuestion, onCloseBankQuestion,
-  showNotesPeek, setShowNotesPeek, mistakePattern,
+  showNotesPeek, setShowNotesPeek, mistakePattern, answerConfidence, setAnswerConfidence,
 }) {
   const q = lesson.question;
   const inPractice = phase === "question" || phase === "bank";
-  const [confidence, setConfidence] = useState(3);
   const [showHint, setShowHint] = useState(false);
 
   return (
@@ -1941,6 +1967,7 @@ function LearnView({
                   <div className="card" style={{ padding: 16, background: "var(--surface-2)" }}>
                     <strong>{viewingBankQuestion.attempts[0].correct ? "Correct" : `Partial credit: ${viewingBankQuestion.attempts[0].partial_credit_percent}%`}</strong>
                     <p style={{ marginBottom: 0 }}>{viewingBankQuestion.attempts[0].feedback}</p>
+                    <ConfidenceFeedback feedback={viewingBankQuestion.attempts[0]} />
                   </div>
                 </>
               ) : (
@@ -1969,11 +1996,12 @@ function LearnView({
               <><label htmlFor="practice-answer" className="muted">Your answer</label><textarea id="practice-answer" className="input" value={studentAnswer} onChange={(e) => setStudentAnswer(e.target.value)} disabled={!!feedback} placeholder="Explain your reasoning and show each step." style={{ minHeight: 150 }} /><HandwrittenAnswerUpload id="practice-handwriting" disabled={!!feedback} setStudentAnswer={setStudentAnswer} /></>
             )}
             {!feedback ? (
-              <><div style={{ display: "flex", gap: 10, marginTop: 14 }}><button className="btn secondary" onClick={() => setShowHint(true)}>Concept hint</button></div>{showHint && <p className="muted" role="status">{q.hint || "Review the core definition, assumptions, and first applicable equation."}</p>}<label htmlFor="confidence" className="muted" style={{ display: "block", marginTop: 16 }}>Confidence before checking: {confidence}/5</label><input id="confidence" type="range" min="1" max="5" value={confidence} onChange={(e) => setConfidence(Number(e.target.value))} style={{ width: "100%" }} /><button className="btn" onClick={onSubmitAnswer} style={{ width: "100%", marginTop: 12 }}>Submit</button></>
+              <><div style={{ display: "flex", gap: 10, marginTop: 14 }}><button className="btn secondary" onClick={() => setShowHint(true)}>Concept hint</button></div>{showHint && <p className="muted" role="status">{q.hint || "Review the core definition, assumptions, and first applicable equation."}</p>}<ConfidenceSlider value={answerConfidence} onChange={setAnswerConfidence} id="practice-confidence" /><button className="btn" onClick={onSubmitAnswer} style={{ width: "100%", marginTop: 12 }}>Submit</button></>
             ) : (
               <div className="card" style={{ padding: 18, marginTop: 18, background: "var(--surface-2)" }}>
                 <strong>{feedback.correct ? "Correct" : `Partial credit: ${feedback.partial_credit_percent}%`}</strong>
                 <p>{feedback.feedback}</p>
+                <ConfidenceFeedback feedback={feedback} />
                 {feedback.misconception && <p className="muted"><strong>Misconception:</strong> {feedback.misconception}</p>}
                 {feedback.what_to_review && <p className="muted"><strong>Review:</strong> {feedback.what_to_review}</p>}
                 {feedback.calculation_check && <p className={feedback.calculation_check.matches ? "calculation-match" : "calculation-mismatch"}><strong>Calculator check:</strong> {feedback.calculation_check.message}</p>}
@@ -1996,7 +2024,7 @@ function LearnView({
 
 function TopicExamView({
   subject, topic, exam, activeQuestion, studentAnswer, setStudentAnswer, selectedOption, setSelectedOption,
-  feedback, onBack, onRegenerate, onPickQuestion, onSubmitAnswer, loading,
+  feedback, onBack, onRegenerate, onPickQuestion, onSubmitAnswer, loading, answerConfidence, setAnswerConfidence,
 }) {
   const attempted = (exam?.questions || []).filter((q) => q.attempts?.length).length;
   const q = activeQuestion;
@@ -2062,11 +2090,12 @@ function TopicExamView({
                 <><label htmlFor="exam-answer" className="muted">Your answer</label><textarea id="exam-answer" className="input" value={studentAnswer} onChange={(e) => setStudentAnswer(e.target.value)} disabled={!!feedback} placeholder="Show all reasoning required for marks." style={{ minHeight: 180 }} /><HandwrittenAnswerUpload id="exam-handwriting" disabled={!!feedback} setStudentAnswer={setStudentAnswer} /></>
               )}
               {!feedback ? (
-                <button className="btn" onClick={onSubmitAnswer} style={{ width: "100%", marginTop: 18 }}>Submit</button>
+                <><ConfidenceSlider value={answerConfidence} onChange={setAnswerConfidence} id="exam-confidence" /><button className="btn" onClick={onSubmitAnswer} style={{ width: "100%", marginTop: 18 }}>Submit</button></>
               ) : (!timed || examSubmitted) ? (
                 <div className="card" style={{ padding: 18, marginTop: 18, background: "var(--surface-2)" }}>
                   <strong>{feedback.correct ? "Correct" : `Partial credit: ${feedback.partial_credit_percent}%`}</strong>
                   <p>{feedback.feedback}</p>
+                  <ConfidenceFeedback feedback={feedback} />
                   {feedback.misconception && <p className="muted"><strong>Misconception:</strong> {feedback.misconception}</p>}
                   {feedback.what_to_review && <p className="muted"><strong>Review:</strong> {feedback.what_to_review}</p>}
                   {feedback.calculation_check && <p className={feedback.calculation_check.matches ? "calculation-match" : "calculation-mismatch"}><strong>Calculator check:</strong> {feedback.calculation_check.message}</p>}
@@ -2108,6 +2137,7 @@ function StemTutor() {
   const [phase, setPhase] = useState("notes");
   const [studentAnswer, setStudentAnswer] = useState("");
   const [selectedOption, setSelectedOption] = useState(null);
+  const [answerConfidence, setAnswerConfidence] = useState(DEFAULT_CONFIDENCE);
   const [feedback, setFeedback] = useState(null);
   const [mistakePattern, setMistakePattern] = useState(null);
   const [questionBank, setQuestionBank] = useState([]);
@@ -2955,6 +2985,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
         setStudentAnswer("");
         setSelectedOption(null);
         setFeedback(null);
+        setAnswerConfidence(DEFAULT_CONFIDENCE);
         setPhase("question");
         setLoading(false);
         return;
@@ -3013,6 +3044,7 @@ Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in th
       setStudentAnswer("");
       setSelectedOption(null);
       setFeedback(null);
+      setAnswerConfidence(DEFAULT_CONFIDENCE);
       setPhase("question");
     } catch (err) {
       showToast(err.message, "error");
@@ -3026,6 +3058,7 @@ Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in th
     setStudentAnswer("");
     setSelectedOption(null);
     setFeedback(question?.attempts?.[0] || null);
+    setAnswerConfidence(question?.attempts?.[0]?.confidence || DEFAULT_CONFIDENCE);
   };
 
   const startTopicExam = async (scope, force = false) => {
@@ -3038,6 +3071,7 @@ Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in th
     setStudentAnswer("");
     setSelectedOption(null);
     setFeedback(null);
+    setAnswerConfidence(DEFAULT_CONFIDENCE);
     setScreen("topicExam");
     try {
       const key = topicExamKey(selectedSubject.id, scope.id);
@@ -3158,6 +3192,9 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
       }
 
       parsed = applyDeterministicCalculationGrade(parsed, q, studentAnswer);
+      parsed = { ...parsed, confidence: normalizeConfidence(answerConfidence) };
+      parsed.confidence_signal = confidenceFlag(parsed);
+      parsed.confidence_insight = confidenceInsight(parsed);
 
       const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
       const nextQuestions = (topicExam?.questions || []).map((question) => question.id === q.id ? appendAttempt(question, attempt) : question);
@@ -3182,11 +3219,21 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
     const entry = subject.masteryLog?.[subtopicId] || { status: "new", correctStreak: 0, mistakes: [] };
     const isGood = fb.correct || (fb.partial_credit_percent ?? 0) >= 80;
     const reviewSchedule = scheduleReview(entry, fb);
+    const confidence = normalizeConfidence(fb.confidence);
+    const confidenceHistory = [{ confidence, score: Number(fb.partial_credit_percent ?? (fb.correct ? 100 : 0)), ts: Date.now() }, ...(entry.confidenceHistory || [])].slice(0, 10);
+    const confidenceUpdates = {
+      lastConfidence: confidence,
+      lastResultCorrect: isGood,
+      confidenceHistory,
+      confidentErrors: Number(entry.confidentErrors || 0) + (reviewSchedule.confidenceSignal === "confident_misconception" ? 1 : 0),
+      uncertainCorrect: Number(entry.uncertainCorrect || 0) + (reviewSchedule.confidenceSignal === "uncertain_correct" ? 1 : 0),
+    };
     const nextEntry = isGood
-      ? { ...entry, ...reviewSchedule, correctStreak: entry.correctStreak + 1, status: entry.correctStreak + 1 >= 2 ? "mastered" : "attempted" }
+      ? { ...entry, ...reviewSchedule, ...confidenceUpdates, correctStreak: Number(entry.correctStreak || 0) + 1, status: Number(entry.correctStreak || 0) + 1 >= 2 ? "mastered" : "attempted" }
       : {
           ...entry,
           ...reviewSchedule,
+          ...confidenceUpdates,
           correctStreak: 0,
           status: "attempted",
           mistakes: [{ type: fb.mistake_type || "concept_gap", note: fb.misconception || fb.what_to_review || "Needs review", ts: Date.now() }, ...(entry.mistakes || [])].slice(0, 5),
@@ -3252,6 +3299,9 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
         }, { onStatus: setLoadingMsg, label: "practice grading response" }));
       }
       parsed = applyDeterministicCalculationGrade(parsed, q, studentAnswer);
+      parsed = { ...parsed, confidence: normalizeConfidence(answerConfidence) };
+      parsed.confidence_signal = confidenceFlag(parsed);
+      parsed.confidence_insight = confidenceInsight(parsed);
       const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
       const key = lessonKey(selectedSubject.id, active.subtopic.id);
       if (hasFirebase && db) {
@@ -3502,6 +3552,8 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           showNotesPeek={showNotesPeek}
           setShowNotesPeek={setShowNotesPeek}
           mistakePattern={mistakePattern}
+          answerConfidence={answerConfidence}
+          setAnswerConfidence={setAnswerConfidence}
         />
       ) : screen === "topicExam" && selectedSubject && activeTopicExam ? (
         <TopicExamView
@@ -3519,6 +3571,8 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onPickQuestion={pickTopicExamQuestion}
           onSubmitAnswer={submitTopicExamAnswer}
           loading={loading}
+          answerConfidence={answerConfidence}
+          setAnswerConfidence={setAnswerConfidence}
         />
       ) : null}
 

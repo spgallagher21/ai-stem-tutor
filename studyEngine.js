@@ -1,18 +1,25 @@
+import { confidenceFlag, normalizeConfidence } from "./confidence";
+
 const DAY = 24 * 60 * 60 * 1000;
 
 export function scheduleReview(entry = {}, result = {}, now = Date.now()) {
   const score = Math.max(0, Math.min(100, Number(result.partial_credit_percent ?? (result.correct ? 100 : 0))));
   const previousInterval = Math.max(0, Number(entry.intervalDays || 0));
+  const confidence = normalizeConfidence(result.confidence);
+  const confidenceSignal = confidenceFlag({ ...result, confidence });
   let intervalDays;
   if (score < 60) intervalDays = 1;
   else if (previousInterval < 1) intervalDays = 2;
   else if (score < 80) intervalDays = Math.max(2, Math.round(previousInterval * 1.4));
   else intervalDays = Math.min(120, Math.max(3, Math.round(previousInterval * 2.2)));
+  if (confidenceSignal === "confident_misconception") intervalDays = 1;
+  if (confidenceSignal === "uncertain_correct") intervalDays = Math.max(1, Math.round(intervalDays * 0.6));
   return {
     intervalDays,
     dueAt: now + intervalDays * DAY,
     lastReviewedAt: now,
     retentionStage: intervalDays >= 21 ? "long-term" : intervalDays >= 7 ? "building" : "new",
+    confidenceSignal,
   };
 }
 
@@ -20,7 +27,10 @@ export function dueSubtopics(subjects, now = Date.now()) {
   return subjects.flatMap((subject) => (subject.meta?.curriculum?.topics || []).flatMap((topic) =>
     (topic.subtopics || []).map((subtopic) => ({ subject, topic, subtopic, mastery: subject.masteryLog?.[subtopic.id] || {} }))
   )).filter((item) => item.mastery.status === "attempted" || (item.mastery.dueAt && item.mastery.dueAt <= now))
-    .sort((a, b) => (a.mastery.dueAt || 0) - (b.mastery.dueAt || 0));
+    .sort((a, b) => {
+      const priority = (item) => item.mastery.confidenceSignal === "confident_misconception" ? 2 : item.mastery.confidenceSignal === "uncertain_correct" ? 1 : 0;
+      return priority(b) - priority(a) || (a.mastery.dueAt || 0) - (b.mastery.dueAt || 0);
+    });
 }
 
 export function buildStudySession(subjects, minutes = 30, now = Date.now()) {
