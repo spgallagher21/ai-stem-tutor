@@ -44,6 +44,7 @@ const DESCRIBE_IMAGE_ENDPOINT = "/api/describe-image";
 const MAX_ATTEMPTS_STORED = 20;
 const QUESTION_BATCH_SIZE = 2;
 const TOPIC_EXAM_QUESTION_COUNT = 4;
+const apiKeyStorageKey = (uid) => `stem-gemini-api-key:${uid || "guest"}`;
 const MAX_SUPPLEMENTARY_IMAGE_CANDIDATES = 4;
 const MAX_SUPPLEMENTARY_IMAGES = 2;
 const APP_NAME = "StudyLoop";
@@ -913,7 +914,11 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
       const data = await res.json();
       if (!res.ok || data.error) {
         const msg = data.error || `Request failed (status ${res.status}).`;
-        if (isQuotaError(msg, res.status)) throw new Error(friendlyGeminiError(msg, res.status, data.retryAfterSeconds));
+        if (isQuotaError(msg, res.status)) {
+          const quotaError = new Error(friendlyGeminiError(msg, res.status, data.retryAfterSeconds));
+          quotaError.retryable = false;
+          throw quotaError;
+        }
         if (res.status >= 500 && attempt < retries) {
           const backoff = Math.min(8000, 700 * 2 ** attempt) + Math.random() * 400;
           onStatus?.("The AI is recharging for a moment...");
@@ -921,17 +926,23 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
           lastErr = new Error(msg);
           continue;
         }
-        throw new Error(msg);
+        const requestError = new Error(msg);
+        requestError.retryable = res.status >= 500;
+        throw requestError;
       }
       const candidate = data.candidates?.[0];
       if (!candidate) throw new Error("Gemini returned no response.");
-      if (candidate.finishReason === "SAFETY") throw new Error("Gemini blocked this response for safety reasons.");
+      if (candidate.finishReason === "SAFETY") {
+        const safetyError = new Error("Gemini blocked this response for safety reasons.");
+        safetyError.retryable = false;
+        throw safetyError;
+      }
       const textPart = candidate.content?.parts?.find((part) => part.text)?.text;
       if (!textPart) throw new Error("Gemini returned an empty response.");
       return textPart;
     } catch (err) {
       lastErr = err;
-      if (attempt >= retries) throw lastErr;
+      if (err.retryable === false || attempt >= retries) throw lastErr;
       const backoff = Math.min(8000, 700 * 2 ** attempt) + Math.random() * 400;
       onStatus?.("The AI is recharging for a moment...");
       await sleep(backoff);
@@ -941,7 +952,7 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
 }
 
 async function callGeminiJSON(request, { onStatus, label = "AI response" } = {}) {
-  const raw = await callGemini(request, { onStatus });
+  const raw = await callGemini(request, { retries: 2, onStatus });
   try {
     return safeParseJSON(raw);
   } catch (parseErr) {
@@ -959,7 +970,7 @@ async function callGeminiJSON(request, { onStatus, label = "AI response" } = {})
         temperature: 0,
         responseMimeType: "application/json",
       },
-    }, { onStatus });
+    }, { retries: 1, onStatus });
     return safeParseJSON(repaired);
   }
 }
@@ -1233,8 +1244,8 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
 
         {step === "tutorial" && (
           <>
-            <h1 className="heading" style={{ marginTop: 0 }}>A 60-second walkthrough</h1>
-            <p className="muted">After this, the dashboard will guide you through the real flow: create a module, upload PDFs, review the generated topics, and open a class-sized lesson.</p>
+            <h1 className="heading" style={{ marginTop: 0 }}>Explore every feature</h1>
+            <p className="muted">Next, a guided example module will show you uploads, generated notes, note Q&amp;A, grading, handwritten maths, confidence, progress tracking, deadlines, and topic exams.</p>
             <p className="muted">You can skip it at any time, and replay it later from Settings.</p>
           </>
         )}
@@ -1341,7 +1352,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
 
           <section className="card" style={{ padding: 22 }}>
             <h2 className="heading" style={{ marginTop: 0 }}>Data & Privacy</h2>
-            <p className="muted">Modules, generated lessons, question history, and progress are stored under your account and backed up in this browser. Source PDFs stay on this device. Your Gemini key stays in this browser session and is never written to Firestore.</p>
+            <p className="muted">Modules, generated lessons, question history, and progress are stored under your account and backed up in this browser. Source PDFs stay on this device. Your Gemini key is saved only in this browser for your current account; it is never written to Firestore or included in exports.</p>
             <button className="btn secondary" onClick={onExportData} style={{ marginRight: 10 }}>Export learning data</button>
             <button className="btn secondary" onClick={onDeleteData}>Delete my data</button>
           </section>
@@ -1361,27 +1372,47 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
 }
 
 const TUTORIAL_STEPS = [
-  { target: "addModule", title: "Create a module", body: "A module is the top-level folder for one course or unit, like Applied Dynamics II." },
-  { target: "moduleName", title: "Name the module", body: "Use the real course/module name. Good names help the AI separate broad topics like Vibrations, 3D Kinematics, or Lagrangian Mechanics." },
-  { target: "fileUpload", title: "Upload notes topic by topic", body: "For faster processing and fewer API limit issues, start with one topic's lecture notes PDF. You can add more note PDFs to this module at any time." },
-  { target: "examUpload", title: "Past papers are optional", body: "If you have past papers, add them now or later. They help practice questions match your exam style, but they are not required to generate topics." },
-  { target: "buildCurriculum", title: "Generate topics", body: "Processing may take a moment. The AI groups your notes into the fewest useful topics and class-sized subtopics it can." },
-  { target: "subjectCard", title: "Open a module", body: "Module cards show progress and remaining study time. Open one to see its generated topics." },
-  { target: "subtopicCard", title: "Start a class", body: "Each class is a bite-sized lesson inside a topic. Dim cards have not generated notes yet." },
-  { target: "done", title: "You're set up", body: "Use Settings to replay this walkthrough, update your API key, or change themes at any time." },
+  { demo: "dashboard", title: "Your module dashboard", body: "Create one module for each university course. The mock Applied Dynamics module below shows completion, remaining study time, and the confidence signals that need attention." },
+  { demo: "upload", title: "Upload notes and past papers", body: "Add one or more lecture-note PDFs. Existing uploads are preserved when you add more. Past papers are optional, but help the question generator mirror the style and mark weighting of your real exams." },
+  { demo: "module", title: "AI-organised topics and classes", body: "The AI indexes the notes, creates broad topic groups, and divides them into class-sized lessons. You can add more PDFs later without replacing the earlier module map." },
+  { demo: "lesson", title: "Source-grounded lesson notes", body: "Opening a class generates structured notes from the relevant PDF pages, including equations, worked examples, coverage checks, and page references. The calculator—not the language model—evaluates numerical expressions." },
+  { demo: "notes", title: "Ask questions about your notes", body: "Ask the tutor to clarify anything in the uploaded material. Answers are restricted to your notes and include file-and-page citations; the tutor tells you when the evidence is not present." },
+  { demo: "practice", title: "Practice and grading", body: "Practice questions are generated from the selected class. Written answers receive rubric-based partial credit, misconception feedback, and a specific review recommendation. Multiple-choice answers are checked directly." },
+  { demo: "handwriting", title: "Upload handwritten maths", body: "Photograph a handwritten answer in good light. Vision transcribes it only when recognition passes reliability checks, then shows the transcription for you to verify before grading. You can always edit or type the maths instead." },
+  { demo: "confidence", title: "Confidence-aware learning", body: "Rate confidence before checking. It never changes the mark: a confident error is prioritised as a possible misconception, while a correct-but-uncertain answer gets an earlier reinforcement review." },
+  { demo: "progress", title: "Progress and independent learning", body: "Two strong recalls can master a lesson, and spaced review schedules it again before it fades. If you learned a class elsewhere, mark it learned independently so the planner accepts it as complete." },
+  { demo: "deadlines", title: "Assignments, tests and exams", body: "Add a due date and select topics, lessons, the full module, or your own description. Study Today works backwards from each deadline and limits recommendations to a manageable daily session." },
+  { demo: "exam", title: "Topic exams and past questions", body: "Topic exams combine related classes and can run in timed mode. Attempts are saved in the question bank so you can revisit answers, marks, feedback, calculator checks, and confidence." },
+  { demo: "settings", title: "You are ready", body: "Your API key is saved only in this browser for this account. Settings lets you change it, adjust study mode and session length, replay this tutorial, export learning data, or delete everything." },
 ];
+
+function TutorialMock({ demo }) {
+  const shell = (children) => <div className="card" style={{ padding: 20, minHeight: 280, background: "var(--surface-2)" }}>{children}</div>;
+  if (demo === "dashboard") return shell(<><div style={{ display: "flex", justifyContent: "space-between" }}><h3 className="heading" style={{ marginTop: 0 }}>Modules</h3><span className="btn">Create Module</span></div><div className="card" style={{ padding: 18 }}><strong>Applied Dynamics II</strong><div className="progress-bar" style={{ marginTop: 16 }}><span style={{ width: "42%" }} /></div><p className="muted mono">42% complete · 95 min left</p><p style={{ color: "var(--warning)", marginBottom: 0 }}>1 confident misconception prioritised</p></div></>);
+  if (demo === "upload") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Create Applied Dynamics II</h3><div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}><div className="card" style={{ padding: 16 }}><strong>Lecture notes</strong><p>✓ Vibrations lectures.pdf</p><p>✓ Lagrangian mechanics.pdf</p><span className="btn secondary">Add PDFs</span></div><div className="card" style={{ padding: 16 }}><strong>Past papers (optional)</strong><p>✓ 2025 final exam.pdf</p><span className="btn secondary">Add papers</span></div></div></>);
+  if (demo === "module") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Vibrations & Dynamic Systems</h3>{["Free and forced vibration", "Damping and resonance", "Multi-degree-of-freedom systems"].map((name, index) => <div key={name} className="card" style={{ padding: 14, marginTop: 10, borderColor: index === 1 ? "var(--warning)" : "var(--border)" }}><strong>{name}</strong><p className="muted" style={{ marginBottom: 0 }}>{index === 0 ? "Mastered" : index === 1 ? "Needs review" : "Lesson ready"}</p></div>)}</>);
+  if (demo === "lesson") return shell(<><span className="muted mono">Applied Dynamics II · Lesson</span><h3 className="heading">Damping and resonance</h3><h4>1. Equation of motion</h4><div>For viscous damping: <MathRenderer text={"$m\\ddot{x}+c\\dot{x}+kx=F_0\\cos(\\omega t)$"} /></div><div className="card" style={{ padding: 12 }}><strong>Calculator-verified example</strong><p className="muted" style={{ marginBottom: 0 }}>The app formulates the substituted expression, then verifies the numerical result deterministically.</p></div><p className="muted">Source: Vibrations lectures.pdf, pp. 12–14</p></>);
+  if (demo === "notes") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Ask your notes</h3><div className="card" style={{ padding: 14, marginBottom: 12 }}><strong>You</strong><p style={{ marginBottom: 0 }}>Why does resonance peak reduce as damping increases?</p></div><div className="card" style={{ padding: 14 }}><strong>Tutor</strong><p>Damping dissipates more energy per cycle and reduces the steady-state amplitude near the natural frequency.</p><span className="muted">Vibrations lectures.pdf · p. 18</span></div></>);
+  if (demo === "practice") return shell(<><span className="muted mono">Short answer · 5 marks</span><h3>Explain the effect of damping ratio on resonance.</h3><div className="card" style={{ padding: 14 }}><strong>Partial credit: 80%</strong><p>You identified amplitude reduction correctly. For full marks, also explain the shift in peak frequency.</p><p className="muted" style={{ marginBottom: 0 }}><strong>Review:</strong> Frequency response and damping ratio.</p></div></>);
+  if (demo === "handwriting") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Handwritten answer</h3><div className="card" style={{ padding: 28, textAlign: "center", borderStyle: "dashed" }}><strong>📷 answer-page.jpg</strong><p className="muted">Image quality passed · transcription verified</p></div><label className="muted">Check the transcription before grading</label><div className="input" style={{ marginTop: 8 }}>ωₙ = √(k/m) = √(800/2) = 20 rad/s</div></>);
+  if (demo === "confidence") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>How confident are you?</h3><input type="range" min="1" max="5" value="4" readOnly style={{ width: "100%" }} /><div className="muted" style={{ display: "flex", justifyContent: "space-between" }}><span>1 · Guessing</span><span>4/5 · Very confident</span><span>5 · Certain</span></div><div className="card" style={{ padding: 14, marginTop: 20, borderColor: "var(--warning)" }}><strong>Confidence check</strong><p style={{ marginBottom: 0 }}>A confident incorrect answer is treated as a likely misconception and moved up the review queue.</p></div></>);
+  if (demo === "progress") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Lesson progress</h3><div className="progress-bar"><span style={{ width: "67%" }} /></div><p className="muted mono">67% complete</p><div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}><div className="card" style={{ padding: 14 }}><strong>Free vibration</strong><p style={{ color: "var(--success)" }}>Mastered · review in 14 days</p></div><div className="card" style={{ padding: 14 }}><strong>Energy methods</strong><p>Completed independently</p></div></div></>);
+  if (demo === "deadlines") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Study Today · 30 minutes</h3><div className="card" style={{ padding: 14, borderColor: "var(--warning)" }}><span className="muted mono">TEST · 5 days left</span><h4>Mid-semester vibrations test</h4><p>6/10 lessons covered · 20 min today</p><span className="btn secondary">Study damping next</span></div><div className="card" style={{ padding: 14, marginTop: 12 }}><span className="muted mono">ASSIGNMENT · 12 days left</span><p style={{ marginBottom: 0 }}>Lagrangian mechanics · 10 min today</p></div></>);
+  if (demo === "exam") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Vibrations Topic Exam</h3><p className="muted mono">3/4 attempted · 18:42 remaining</p><div style={{ display: "flex", gap: 8, marginBottom: 16 }}>{["Q1 100%", "Q2 75%", "Q3 80%", "Q4"].map((q) => <span className="btn secondary" key={q}>{q}</span>)}</div><div className="card" style={{ padding: 14 }}><strong>Past answer and feedback saved</strong><p style={{ marginBottom: 0 }}>Reopen any question to review your answer, mark breakdown, confidence, and verified calculations.</p></div></>);
+  return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Settings & privacy</h3><div className="card" style={{ padding: 14 }}><strong>API key</strong><p style={{ color: "var(--success)" }}>✓ Saved in this browser for your current account</p><strong>Study preferences</strong><p>Teach from scratch · 30-minute sessions</p></div><div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}><span className="btn secondary">Replay tutorial</span><span className="btn secondary">Export data</span><span className="btn ghost">Delete my data</span></div></>);
+}
 
 function TutorialOverlay({ step, onNext, onBack, onSkip }) {
   const current = TUTORIAL_STEPS[step] || TUTORIAL_STEPS[0];
   const isLast = step >= TUTORIAL_STEPS.length - 1;
   return (
-    <>
-      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1700, pointerEvents: "none" }} />
-      <div className="card" style={{ position: "fixed", right: 20, bottom: 20, padding: 22, width: "min(380px, calc(100vw - 40px))", zIndex: 2000 }}>
-        <div className="muted mono" style={{ fontSize: 12, marginBottom: 8 }}>Step {step + 1} of {TUTORIAL_STEPS.length}</div>
-        <h3 className="heading" style={{ marginTop: 0 }}>{current.title}</h3>
-        <p className="muted">{current.body}</p>
-        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 18 }}>
+    <div role="dialog" aria-modal="true" aria-labelledby="tutorial-title" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 2000, overflowY: "auto", padding: 20 }}>
+      <div className="card" style={{ margin: "min(5vh, 40px) auto", padding: 24, width: "min(920px, 100%)" }}>
+        <div className="muted mono" style={{ fontSize: 12, marginBottom: 8 }}>Feature tour · {step + 1} of {TUTORIAL_STEPS.length}</div>
+        <h2 id="tutorial-title" className="heading" style={{ margin: "0 0 8px" }}>{current.title}</h2>
+        <p className="muted" style={{ fontSize: 16 }}>{current.body}</p>
+        <TutorialMock demo={current.demo} />
+        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 20 }}>
           <button className="btn ghost" onClick={onSkip}>Skip</button>
           <div style={{ display: "flex", gap: 10 }}>
             {step > 0 && <button className="btn secondary" onClick={onBack}>Back</button>}
@@ -1389,7 +1420,7 @@ function TutorialOverlay({ step, onNext, onBack, onSkip }) {
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -2177,7 +2208,11 @@ function StemTutor() {
     if (!uid) return;
     getSettings(uid).then((saved) => {
       const next = saved || { onboarded: false, theme: "aurora-dark", studyContext: "", referralSource: "", tutorialSeen: false };
-      const normalized = { studyContext: "", referralSource: "", tutorialSeen: false, studyMode: "deep", sessionMinutes: 30, ...next, geminiApiKey: sessionStorage.getItem("stem-gemini-api-key") || "", theme: normalizeThemeId(next.theme) };
+      const legacySessionKey = sessionStorage.getItem("stem-gemini-api-key") || "";
+      const savedApiKey = localStorage.getItem(apiKeyStorageKey(uid)) || legacySessionKey;
+      if (legacySessionKey && !localStorage.getItem(apiKeyStorageKey(uid))) localStorage.setItem(apiKeyStorageKey(uid), legacySessionKey);
+      sessionStorage.removeItem("stem-gemini-api-key");
+      const normalized = { studyContext: "", referralSource: "", tutorialSeen: false, studyMode: "deep", sessionMinutes: 30, ...next, geminiApiKey: savedApiKey, theme: normalizeThemeId(next.theme) };
       setSettings(normalized);
       document.documentElement.dataset.theme = normalized.theme;
       setSettingsLoaded(true);
@@ -2288,7 +2323,8 @@ function StemTutor() {
   const persistSettings = async (patch) => {
     const next = { ...settings, ...patch };
     setSettings(next);
-    sessionStorage.setItem("stem-gemini-api-key", next.geminiApiKey || "");
+    if (next.geminiApiKey) localStorage.setItem(apiKeyStorageKey(uid), next.geminiApiKey);
+    else localStorage.removeItem(apiKeyStorageKey(uid));
     await saveSettings(uid, next);
   };
 
@@ -2470,14 +2506,28 @@ Rules:
 - Do not invent topics that are not covered by the digest.
 - Rate each subtopic's difficulty from 1 to 5 and estimate minutes needed to learn it.`;
 
-    const result = await callGeminiJSON({
-      apiKey: settings.geminiApiKey,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: hasExistingMap ? 0.15 : 0.2, responseMimeType: "application/json", responseSchema: MODULE_INDEX_SCHEMA },
-    }, { onStatus: setLoadingMsg, label: "module organisation response" });
+    let result;
+    let validatedCurriculum;
+    let lastError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        if (attempt > 0) setLoadingMsg(`Checking ${file.name} again with a stricter module-map pass...`);
+        result = await callGeminiJSON({
+          apiKey: settings.geminiApiKey,
+          contents: [{ role: "user", parts: [{ text: `${prompt}${attempt > 0 ? "\n\nRETRY REQUIREMENT: The previous response failed validation. Return at least one uniquely named topic, give every topic meaningful class-sized subtopics, and exactly match the requested JSON schema." : ""}` }] }],
+          generationConfig: { temperature: attempt > 0 ? 0.05 : hasExistingMap ? 0.15 : 0.2, responseMimeType: "application/json", responseSchema: MODULE_INDEX_SCHEMA },
+        }, { onStatus: setLoadingMsg, label: "module organisation response" });
+        validatedCurriculum = validateCurriculum(result.curriculum);
+        break;
+      } catch (error) {
+        lastError = error;
+        if (error.retryable === false) break;
+      }
+    }
+    if (!validatedCurriculum) throw new Error(`The module map could not be validated after a second pass. ${lastError?.message || "Please try again."}`);
     return {
       sourceIndex: result.sourceIndex,
-      curriculum: hasExistingMap ? preserveCurriculumIds(existingCurriculum, validateCurriculum(result.curriculum)) : assignIds(validateCurriculum(result.curriculum)),
+      curriculum: hasExistingMap ? preserveCurriculumIds(existingCurriculum, validatedCurriculum) : assignIds(validatedCurriculum),
     };
   };
 
@@ -2506,13 +2556,18 @@ Rules:
 
 Return only topicGroups.`;
 
-    const result = await callGeminiJSON({
-      apiKey: settings.geminiApiKey,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: TOPIC_GROUPS_SCHEMA },
-    }, { onStatus: setLoadingMsg, label: "topic grouping response" });
-
-    return preserveCurriculumIds(curriculum, { ...curriculum, topicGroups: result.topicGroups || [] });
+    try {
+      const result = await callGeminiJSON({
+        apiKey: settings.geminiApiKey,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: TOPIC_GROUPS_SCHEMA },
+      }, { onStatus: setLoadingMsg, label: "topic grouping response" });
+      return preserveCurriculumIds(curriculum, { ...curriculum, topicGroups: result.topicGroups || [] });
+    } catch (error) {
+      console.warn("Using the validated module map without the optional regrouping pass", error);
+      setLoadingMsg("The module map is valid; finishing with automatic topic groups...");
+      return curriculum;
+    }
   };
 
   const getLocalSource = async (source) => {
@@ -3417,6 +3472,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
     localStorage.removeItem("stem-subjects");
     localStorage.removeItem("stem-modules");
     localStorage.removeItem("stem-settings");
+    localStorage.removeItem(apiKeyStorageKey(uid));
     sessionStorage.removeItem("stem-gemini-api-key");
     await deleteArtifacts(uid);
     await clearLocalPdfs();
