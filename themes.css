@@ -445,6 +445,12 @@ select:focus-visible {
 .grade-summary-card strong { font-size: 28px; }
 .curriculum-editor-lesson { display: flex; justify-content: space-between; gap: 14px; align-items: end; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .curriculum-editor-lesson > div, .curriculum-editor-lesson label { display: grid; gap: 5px; }
+.module-exam-panel > summary { cursor: pointer; display: flex; justify-content: space-between; gap: 16px; align-items: center; list-style-position: inside; }
+.module-exam-panel > summary .heading { font-size: 18px; }
+.module-exam-panel-content { padding-top: 18px; }
+.web-answer-notice { display: grid; gap: 3px; margin: 14px 0; padding: 12px 14px; border: 1px solid var(--warning); border-radius: 8px; background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.web-answer-notice span { color: var(--text-muted); font-size: 13px; }
+.web-sources a { color: var(--accent-text); overflow-wrap: anywhere; }
 .assessment-type { display: inline-block; padding: 4px 8px; border-radius: 999px; color: var(--interactive-text); background: var(--interactive); font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .assessment-type.assignment { background: var(--accent-2); }
 .assessment-type.test { background: var(--warning); color: #17120a; }
