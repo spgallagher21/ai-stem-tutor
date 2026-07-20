@@ -1,3 +1,5 @@
+import { calibrateLearningMinutes } from "./timeEstimates";
+
 const QUESTION_TYPES = new Set(["multiple_choice", "fill_blank", "short_answer", "derivation", "long_answer"]);
 const clamp = (value, min, max, fallback) => Number.isFinite(Number(value)) ? Math.min(max, Math.max(min, Number(value))) : fallback;
 
@@ -59,7 +61,10 @@ export function validateCurriculum(value) {
     const name = String(topic.name || "").trim().toLowerCase();
     if (!name || names.has(name)) throw new Error("The AI returned duplicate or unnamed topics.");
     names.add(name);
-    topic.subtopics = (topic.subtopics || []).map((item) => ({ ...item, difficulty: clamp(item.difficulty, 1, 5, 3), estimatedMinutes: clamp(item.estimatedMinutes, 5, 240, 20) }));
+    topic.subtopics = (topic.subtopics || []).map((item) => {
+      const difficulty = clamp(item.difficulty, 1, 5, 3);
+      return { ...item, difficulty, estimatedMinutes: calibrateLearningMinutes(item.estimatedMinutes, difficulty), timeEstimateVersion: 2 };
+    });
   });
   return value;
 }
