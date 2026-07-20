@@ -432,8 +432,19 @@ select:focus-visible {
 .assessment-list { display: grid; gap: 14px; }
 .assessment-card { display: flex; justify-content: space-between; gap: 18px; padding: 20px; }
 .assessment-card h3 { margin: 8px 0 4px; }
-.assessment-card.completed { opacity: 0.68; }
+.assessment-card.completed { border-color: var(--success); }
 .assessment-actions { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.assessment-details { display: grid; gap: 14px; flex: 1; }
+.grade-entry { display: grid; grid-template-columns: repeat(2, minmax(100px, 150px)) auto; gap: 9px; align-items: end; padding-top: 12px; border-top: 1px solid var(--border); }
+.grade-entry label { display: grid; gap: 5px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.grade-hidden { display: flex; align-items: center; min-height: 42px; letter-spacing: 3px; }
+.grades-header { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin: 16px 0 20px; }
+.grade-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.grade-summary-card { display: grid; gap: 6px; padding: 18px; }
+.grade-summary-card span, .grade-summary-card small { color: var(--text-muted); }
+.grade-summary-card strong { font-size: 28px; }
+.curriculum-editor-lesson { display: flex; justify-content: space-between; gap: 14px; align-items: end; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.curriculum-editor-lesson > div, .curriculum-editor-lesson label { display: grid; gap: 5px; }
 .assessment-type { display: inline-block; padding: 4px 8px; border-radius: 999px; color: var(--interactive-text); background: var(--interactive); font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .assessment-type.assignment { background: var(--accent-2); }
 .assessment-type.test { background: var(--warning); color: #17120a; }
@@ -456,6 +467,9 @@ select:focus-visible {
   .assessment-layout { grid-template-columns: 1fr; }
   .assessment-basics { grid-template-columns: 1fr; }
   .assessment-card, .deadline-recommendation { align-items: stretch; flex-direction: column; }
+  .grades-header, .curriculum-editor-lesson { align-items: stretch; flex-direction: column; }
+  .grade-entry { grid-template-columns: 1fr 1fr; }
+  .grade-entry .btn { grid-column: 1 / -1; }
 }
 
 .paper-muted {

@@ -1,4 +1,5 @@
 import { confidenceFlag, normalizeConfidence } from "./confidence";
+import { effectiveLearningMinutes } from "./timeEstimates";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -38,7 +39,7 @@ export function buildStudySession(subjects, minutes = 30, now = Date.now()) {
   const selected = [];
   let used = 0;
   for (const item of due) {
-    const duration = Math.min(20, Math.max(5, Number(item.subtopic.estimatedMinutes || 10)));
+    const duration = Math.min(20, effectiveLearningMinutes(item.subtopic));
     if (selected.length && used + duration > minutes) break;
     selected.push({ ...item, duration });
     used += duration;
@@ -63,7 +64,7 @@ export function buildDeadlinePlan(assessments, subjects, { now = Date.now(), ses
       const subject = subjectById.get(assessment.subjectId);
       const scope = assessmentScopeItems(assessment, subject);
       const remaining = scope.filter((item) => item.mastery.status !== "mastered");
-      const remainingMinutes = remaining.reduce((sum, item) => sum + Math.max(5, Number(item.subtopic.estimatedMinutes || 10)), 0);
+      const remainingMinutes = remaining.reduce((sum, item) => sum + effectiveLearningMinutes(item.subtopic), 0);
       const daysRemaining = Math.max(0, Math.ceil((Number(assessment.dueAt) - now) / DAY));
       const studyDays = Math.max(1, daysRemaining);
       const dailyMinutes = Math.ceil(remainingMinutes / studyDays / 5) * 5;

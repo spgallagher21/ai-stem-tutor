@@ -25,6 +25,9 @@ import { deleteArtifacts, exportLearningData, getArtifact, listArtifacts, saveAr
 import { buildDeadlinePlan, buildStudySession, dueSubtopics, scheduleReview } from "./studyEngine";
 import { CONFIDENCE_LABELS, DEFAULT_CONFIDENCE, confidenceFlag, confidenceInsight, normalizeConfidence } from "./confidence";
 import { buildModuleExamScope, moduleBoundaryText } from "./examScope";
+import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTopic } from "./curriculumEditor";
+import { buildGradeSummary } from "./gradebook";
+import { effectiveLearningMinutes } from "./timeEstimates";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
 import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
 import {
@@ -517,11 +520,11 @@ function topicExamKey(subjectId, topicId) {
 }
 
 function topicSourceSignature(subject) {
-  return JSON.stringify([...(subject.meta?.sourceFiles || []), ...(subject.meta?.examFiles || [])].map((file) => ({
+  return JSON.stringify({ files: [...(subject.meta?.sourceFiles || []), ...(subject.meta?.examFiles || [])].map((file) => ({
     name: file.name,
     pageCount: file.pageCount || 0,
     localPdfId: file.localPdfId || file.path || "",
-  })));
+  })), curriculum: curriculumStructureSignature(subject.meta?.curriculum) });
 }
 
 function computeSubjectProgress(curriculum, masteryLog = {}) {
@@ -529,7 +532,7 @@ function computeSubjectProgress(curriculum, masteryLog = {}) {
   let masteredMinutes = 0;
   (curriculum?.topics || []).forEach((topic) => {
     (topic.subtopics || []).forEach((st) => {
-      const minutes = st.estimatedMinutes || 10;
+      const minutes = effectiveLearningMinutes(st);
       totalMinutes += minutes;
       if (masteryLog[st.id]?.status === "mastered") masteredMinutes += minutes;
     });
@@ -1446,7 +1449,7 @@ function Dashboard({
             <p className="muted" style={{ margin: "6px 0 0" }}>Create one module per course, upload notes at module level, then study AI-organised topics and classes.</p>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn secondary" onClick={onManageAssessments}>Deadlines</button>
+            <button className="btn secondary" onClick={onManageAssessments}>Deadlines &amp; Grades</button>
             <button className="btn secondary" onClick={onSettings}>Settings</button>
             <button className="btn" data-tour="addModule" onClick={onAddSubject}>Create Module</button>
           </div>
@@ -1457,7 +1460,7 @@ function Dashboard({
             <h2 id="study-today-title" className="heading" style={{ marginTop: 0 }}>Study Today</h2>
             {deadlinePlan.length ? <div className="deadline-recommendations">{deadlinePlan.map((plan) => <article key={plan.id} className={`deadline-recommendation ${plan.urgency}`}><div><span>{plan.type} · {plan.daysRemaining === 0 ? "due today" : `${plan.daysRemaining} day${plan.daysRemaining === 1 ? "" : "s"} left`}</span><strong>{plan.title}</strong><small>{plan.completedCount}/{plan.totalCount} lessons covered · {plan.todayMinutes} min of today's {sessionMinutes}-min session</small>{plan.dailyMinutes > plan.todayMinutes && <small>Full coverage would require about {plan.dailyMinutes} min/day; StudyLoop is prioritising the most urgent material first.</small>}</div>{plan.recommendedItems[0] && <button className="btn secondary" onClick={() => onStartDue(plan.recommendedItems[0])}>Study next</button>}</article>)}</div> : <p className="muted">Add upcoming assignments, tests or exams to receive deadline-aware recommendations.</p>}
             {!deadlinePlan.length && dueItems.length > 0 && <button className="btn" onClick={() => onStartDue(dueItems[0])}>Start a {sessionMinutes}-minute review</button>}
-            <button className="btn ghost" onClick={onManageAssessments}>{deadlinePlan.length ? "Manage deadlines" : "Add a deadline"}</button>
+            <button className="btn ghost" onClick={onManageAssessments}>{deadlinePlan.length ? "Deadlines & grades" : "Add deadline or grade"}</button>
           </section>
         )}
 
@@ -1483,7 +1486,7 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
     <div className="grid subject-grid">
       {subjects.map((subject) => {
         const progress = computeSubjectProgress(subject.meta?.curriculum, subject.masteryLog);
-        const remaining = (subject.meta?.curriculum?.topics || []).reduce((sum, topic) => sum + (topic.subtopics || []).reduce((inner, st) => inner + (subject.masteryLog?.[st.id]?.status === "mastered" ? 0 : st.estimatedMinutes || 10), 0), 0);
+        const remaining = (subject.meta?.curriculum?.topics || []).reduce((sum, topic) => sum + (topic.subtopics || []).reduce((inner, st) => inner + (subject.masteryLog?.[st.id]?.status === "mastered" ? 0 : effectiveLearningMinutes(st)), 0), 0);
         const masteryEntries = Object.values(subject.masteryLog || {});
         const confidentMisconceptions = masteryEntries.filter((entry) => entry.confidenceSignal === "confident_misconception").length;
         const uncertainAnswers = masteryEntries.filter((entry) => entry.confidenceSignal === "uncertain_correct").length;
@@ -1514,16 +1517,18 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
   );
 }
 
-function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartModuleExam, onReviewWeak, onAddModuleFiles, onAskNotes, onMarkIndependent, loading, loadingMsg, showToast }) {
+function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartModuleExam, onReviewWeak, onAddModuleFiles, onAskNotes, onMarkIndependent, onSaveCurriculum, loading, loadingMsg, showToast }) {
   const [notesFiles, setNotesFiles] = useState([]);
   const [examFiles, setExamFiles] = useState([]);
   const allTopics = subject.meta?.curriculum?.topics || [];
   const [examTopicIds, setExamTopicIds] = useState(() => allTopics.map((topic) => topic.id));
+  const [reorganising, setReorganising] = useState(false);
+  const [draftCurriculum, setDraftCurriculum] = useState(subject.meta?.curriculum);
   const masteryLog = subject.masteryLog || {};
   const weakCount = Object.values(masteryLog).filter((entry) => entry.status === "attempted").length;
   const progress = computeSubjectProgress(subject.meta?.curriculum, masteryLog);
   const topicGroups = normalizeTopicGroups(subject.meta?.curriculum);
-  useEffect(() => setExamTopicIds((subject.meta?.curriculum?.topics || []).map((topic) => topic.id)), [subject.id]);
+  useEffect(() => { setExamTopicIds((subject.meta?.curriculum?.topics || []).map((topic) => topic.id)); setDraftCurriculum(subject.meta?.curriculum); setReorganising(false); }, [subject.id]);
 
   const readFiles = async (files, setter, label) => {
     const next = [];
@@ -1548,6 +1553,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
             <div className="muted mono">{progress}% complete - {(subject.meta?.curriculum?.topics || []).length} topic{(subject.meta?.curriculum?.topics || []).length === 1 ? "" : "s"}</div>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {!reorganising ? <button className="btn secondary" onClick={() => { setDraftCurriculum(subject.meta?.curriculum); setReorganising(true); }}>Reorganise</button> : <><button className="btn ghost" onClick={() => { setDraftCurriculum(subject.meta?.curriculum); setReorganising(false); }}>Cancel</button><button className="btn" onClick={async () => { try { await onSaveCurriculum(draftCurriculum); setReorganising(false); } catch (error) { showToast(error.message, "error"); } }}>Done</button></>}
             <button className="btn" onClick={onAskNotes}>Ask your notes</button>
             {weakCount > 0 && <button className="btn secondary" onClick={onReviewWeak}>Review {weakCount} weak topic{weakCount > 1 ? "s" : ""}</button>}
           </div>
@@ -1602,7 +1608,24 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
           <button className="btn" disabled={!examTopicIds.length || loading} onClick={() => onStartModuleExam(buildModuleExamScope(subject, examTopicIds))} style={{ marginTop: 16 }}>{examTopicIds.length === allTopics.length ? "Generate full module exam" : `Generate exam from ${examTopicIds.length} topic${examTopicIds.length === 1 ? "" : "s"}`}</button>
         </section>
 
-        {topicGroups.map((group) => {
+        {reorganising ? (
+          <section className="card curriculum-editor" style={{ padding: 20 }}>
+            <h2 className="heading" style={{ marginTop: 0 }}>Reorganise module</h2>
+            <p className="muted">Rename topics or move lessons between them. Lesson IDs, generated notes, progress, questions, and source-page links remain unchanged.</p>
+            <div className="grid" style={{ gap: 16 }}>
+              {(draftCurriculum?.topics || []).map((topic) => (
+                <article className="card" key={topic.id} style={{ padding: 16, background: "var(--surface-2)" }}>
+                  <label htmlFor={`topic-name-${topic.id}`} className="muted">Topic name</label>
+                  <input id={`topic-name-${topic.id}`} className="input" value={topic.name} onChange={(event) => { try { setDraftCurriculum((current) => renameCurriculumTopic(current, topic.id, event.target.value)); } catch (error) { showToast(error.message, "error"); } }} style={{ margin: "7px 0 12px" }} />
+                  <div className="grid" style={{ gap: 9 }}>
+                    {(topic.subtopics || []).map((lesson) => <div key={lesson.id} className="curriculum-editor-lesson"><div><strong>{lesson.name}</strong><small className="muted">{effectiveLearningMinutes(lesson)} min · source links preserved</small></div><label><span className="muted">Move to</span><select className="input" value={topic.id} onChange={(event) => setDraftCurriculum((current) => moveCurriculumLesson(current, lesson.id, event.target.value))}>{(draftCurriculum?.topics || []).map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}</select></label></div>)}
+                    {!topic.subtopics?.length && <p className="muted">No lessons currently in this topic.</p>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : topicGroups.map((group) => {
           return (
           <section key={group.id || group.name} className="topic-group-block">
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 18, flexWrap: "wrap" }}>
@@ -1632,7 +1655,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
                       >
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                           <strong>{st.name}</strong>
-                          <span className="mono muted">{st.difficulty || 1}/5</span>
+                          <span className="mono muted">{effectiveLearningMinutes(st)} min · {st.difficulty || 1}/5</span>
                         </div>
                         <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
                           {entry?.learnedIndependently ? "Completed independently" : entry?.status === "mastered" ? "Mastered" : entry?.status === "attempted" ? "Needs review" : hasLesson ? "Lesson ready" : "Lesson not generated yet"}
@@ -1699,43 +1722,55 @@ function NotesAssistant({ subject, messages, onBack, onAsk, onClear, loading }) 
   );
 }
 
-function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, onToggleComplete, loading }) {
+function AssessmentGradeEditor({ assessment, onUpdate, showGrades }) {
+  const [weight, setWeight] = useState(assessment.weightPercent ?? "");
+  const [grade, setGrade] = useState(assessment.gradePercent ?? "");
+  return <div className="grade-entry"><label>Worth (%)<input className="input" type="number" min="0" max="100" step="0.1" value={weight} onChange={(event) => setWeight(event.target.value)} placeholder="e.g. 20" /></label><label>Grade (%){showGrades ? <input className="input" type="number" min="0" max="100" step="0.1" value={grade} onChange={(event) => setGrade(event.target.value)} placeholder={assessment.status === "completed" ? "Pending" : "Add later"} /> : <span className="input grade-hidden">•••</span>}</label><button className="btn secondary" onClick={() => onUpdate(assessment, { weightPercent: weight === "" ? null : Math.max(0, Math.min(100, Number(weight))), gradePercent: grade === "" ? null : Math.max(0, Math.min(100, Number(grade))), gradeUpdatedAt: Date.now() })}>{showGrades ? "Save grade" : "Save weight"}</button></div>;
+}
+
+function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, onToggleComplete, onUpdate, loading }) {
   const [subjectId, setSubjectId] = useState(subjects[0]?.id || "");
   const [title, setTitle] = useState("");
   const [type, setType] = useState("exam");
   const [dueAt, setDueAt] = useState("");
+  const [weightPercent, setWeightPercent] = useState("");
   const [fullModule, setFullModule] = useState(false);
   const [topicIds, setTopicIds] = useState([]);
   const [subtopicIds, setSubtopicIds] = useState([]);
   const [customScope, setCustomScope] = useState("");
+  const [showGrades, setShowGrades] = useState(false);
   const subject = subjects.find((item) => item.id === subjectId);
   const topics = subject?.meta?.curriculum?.topics || [];
   const lessons = topics.flatMap((topic) => (topic.subtopics || []).map((subtopic) => ({ ...subtopic, topicName: topic.name })));
   const selectedValues = (event) => [...event.target.selectedOptions].map((option) => option.value);
+  const grades = buildGradeSummary(subjects, assessments);
 
   const submit = async (event) => {
     event.preventDefault();
     if (!subjectId || !title.trim() || !dueAt || (!fullModule && !topicIds.length && !subtopicIds.length && !customScope.trim())) return;
-    await onSave({ id: crypto.randomUUID(), subjectId, title: title.trim(), type, dueAt: new Date(dueAt).getTime(), fullModule, topicIds, subtopicIds, customScope: customScope.trim(), status: "upcoming", createdAt: Date.now() });
-    setTitle(""); setDueAt(""); setFullModule(false); setTopicIds([]); setSubtopicIds([]); setCustomScope("");
+    await onSave({ id: crypto.randomUUID(), subjectId, title: title.trim(), type, dueAt: new Date(dueAt).getTime(), weightPercent: weightPercent === "" ? null : Math.max(0, Math.min(100, Number(weightPercent))), gradePercent: null, fullModule, topicIds, subtopicIds, customScope: customScope.trim(), status: "upcoming", createdAt: Date.now() });
+    setTitle(""); setDueAt(""); setWeightPercent(""); setFullModule(false); setTopicIds([]); setSubtopicIds([]); setCustomScope("");
   };
 
   return <div className="app-shell"><div className="container">
     <button className="btn ghost" onClick={onBack}>Back to dashboard</button>
-    <header style={{ margin: "16px 0 24px" }}><h1 className="heading" style={{ marginBottom: 6 }}>Assignments, tests and exams</h1><p className="muted">Map each deadline to your module content so StudyLoop can work backwards and keep recommendations manageable.</p></header>
+    <header className="grades-header"><div><h1 className="heading" style={{ marginBottom: 6 }}>Deadlines &amp; Grades</h1><p className="muted">Plan upcoming work, record results when they arrive, and track weighted performance.</p></div><button className="btn secondary" onClick={() => setShowGrades((value) => !value)}>{showGrades ? "Hide grades" : "Show grades"}</button></header>
+    <section className="grade-summary-grid"><div className="card grade-summary-card"><span>Overall average</span><strong>{showGrades && grades.overallAverage !== null ? `${grades.overallAverage.toFixed(1)}%` : "•••"}</strong><small>{grades.modules.length ? `${grades.modules.length} graded module${grades.modules.length === 1 ? "" : "s"}` : "No grades recorded yet"}</small></div><div className="card grade-summary-card"><span>Estimated 4.0 GPA</span><strong>{showGrades && grades.estimatedGpa !== null ? grades.estimatedGpa.toFixed(2) : "•••"}</strong><small>Approximation from overall percentage</small></div>{grades.modules.map((item) => <div className="card grade-summary-card" key={item.subject.id}><span>{item.subject.meta?.name || "Module"}</span><strong>{showGrades ? `${item.average.toFixed(1)}%` : "•••"}</strong><small>{item.weightCompleted.toFixed(1)}% of module weight graded</small></div>)}</section>
+    <p className="muted" style={{ fontSize: 12 }}>Module averages use assessments with both a grade and weighting. The overall average gives each graded module equal weight. GPA is an estimate because university conversion systems vary.</p>
     <div className="assessment-layout">
       <form className="card assessment-form" onSubmit={submit}>
         <h2 className="heading" style={{ marginTop: 0 }}>Add a deadline</h2>
         <label htmlFor="assessment-module">Module</label><select id="assessment-module" className="input" value={subjectId} onChange={(event) => { setSubjectId(event.target.value); setTopicIds([]); setSubtopicIds([]); }}><option value="">Select a module</option>{subjects.map((item) => <option key={item.id} value={item.id}>{item.meta?.name}</option>)}</select>
         <label htmlFor="assessment-title">Title</label><input id="assessment-title" className="input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Midterm 1" />
         <div className="grid assessment-basics"><div><label htmlFor="assessment-type">Type</label><select id="assessment-type" className="input" value={type} onChange={(event) => setType(event.target.value)}><option value="assignment">Assignment</option><option value="test">Test</option><option value="exam">Exam</option></select></div><div><label htmlFor="assessment-date">Due date</label><input id="assessment-date" className="input" type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></div></div>
+        <label htmlFor="assessment-weight">Worth toward module grade (%) <span className="muted">(optional; add later if unknown)</span></label><input id="assessment-weight" className="input" type="number" min="0" max="100" step="0.1" value={weightPercent} onChange={(event) => setWeightPercent(event.target.value)} placeholder="e.g. 20" />
         <label className="check-row"><input type="checkbox" checked={fullModule} onChange={(event) => setFullModule(event.target.checked)} /> Full module</label>
         {!fullModule && <><label htmlFor="assessment-topics">Generated topics <span className="muted">(Ctrl/Cmd-click to select several)</span></label><select id="assessment-topics" className="input multi-select" multiple value={topicIds} onChange={(event) => setTopicIds(selectedValues(event))}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.name}</option>)}</select>
         <label htmlFor="assessment-lessons">Generated lessons <span className="muted">(optional, multiple allowed)</span></label><select id="assessment-lessons" className="input multi-select" multiple value={subtopicIds} onChange={(event) => setSubtopicIds(selectedValues(event))}>{lessons.map((lesson) => <option key={lesson.id} value={lesson.id}>{lesson.topicName} — {lesson.name}</option>)}</select>
         <label htmlFor="custom-scope">Or describe the scope in your own words</label><textarea id="custom-scope" className="input" rows="3" value={customScope} onChange={(event) => setCustomScope(event.target.value)} placeholder="e.g. Everything from Fourier series through frequency response, excluding filters" /><p className="muted" style={{ fontSize: 13 }}>StudyLoop will map this description to the closest uploaded topics and lessons for you to review.</p></>}
         <button className="btn" disabled={loading || !subjectId || !title.trim() || !dueAt || (!fullModule && !topicIds.length && !subtopicIds.length && !customScope.trim())}>{loading ? "Mapping scope…" : "Add deadline"}</button>
       </form>
-      <section className="assessment-list"><h2 className="heading">Upcoming deadlines</h2>{!assessments.length ? <div className="card" style={{ padding: 22 }}><p className="muted">No deadlines added yet.</p></div> : [...assessments].sort((a, b) => a.dueAt - b.dueAt).map((assessment) => { const module = subjects.find((item) => item.id === assessment.subjectId); return <article className={`card assessment-card ${assessment.status === "completed" ? "completed" : ""}`} key={assessment.id}><div><span className={`assessment-type ${assessment.type}`}>{assessment.type}</span><h3 className="heading">{assessment.title}</h3><p className="muted">{module?.meta?.name} · {new Date(assessment.dueAt).toLocaleString()}</p><p>{assessment.fullModule ? "Full module" : assessment.scopeLabel || `${assessment.topicIds?.length || 0} topics and ${assessment.subtopicIds?.length || 0} lessons selected`}</p>{assessment.interpretation && <p className="muted"><strong>Interpreted scope:</strong> {assessment.interpretation}</p>}</div><div className="assessment-actions"><button className="btn secondary" onClick={() => onToggleComplete(assessment)}>{assessment.status === "completed" ? "Mark upcoming" : "Mark completed"}</button><button className="btn ghost" onClick={() => onDelete(assessment.id)}>Delete</button></div></article>; })}</section>
+      <section className="assessment-list"><h2 className="heading">Assessments</h2>{!assessments.length ? <div className="card" style={{ padding: 22 }}><p className="muted">No deadlines or grades added yet.</p></div> : [...assessments].sort((a, b) => (a.status === "completed") - (b.status === "completed") || a.dueAt - b.dueAt).map((assessment) => { const module = subjects.find((item) => item.id === assessment.subjectId); return <article className={`card assessment-card ${assessment.status === "completed" ? "completed" : ""}`} key={assessment.id}><div className="assessment-details"><div><span className={`assessment-type ${assessment.type}`}>{assessment.type}</span><h3 className="heading">{assessment.title}</h3><p className="muted">{module?.meta?.name} · {new Date(assessment.dueAt).toLocaleString()}</p><p>{assessment.fullModule ? "Full module" : assessment.scopeLabel || `${assessment.topicIds?.length || 0} topics and ${assessment.subtopicIds?.length || 0} lessons selected`}</p>{assessment.interpretation && <p className="muted"><strong>Interpreted scope:</strong> {assessment.interpretation}</p>}</div><AssessmentGradeEditor assessment={assessment} onUpdate={onUpdate} showGrades={showGrades} /></div><div className="assessment-actions"><button className="btn secondary" onClick={() => onToggleComplete(assessment)}>{assessment.status === "completed" ? "Mark upcoming" : "Mark completed"}</button><button className="btn ghost" onClick={() => onDelete(assessment.id)}>Delete</button></div></article>; })}</section>
     </div>
   </div></div>;
 }
@@ -2482,6 +2517,7 @@ Return:
 2. curriculum: the full updated module map, including topicGroups above topics where several related topics should be examined together.
 
 Rules:
+- The existing map may include manualOrganization metadata. Student-edited topic names and lesson placements are authoritative: never undo, rename, or move them. Only add genuinely new material or enrich existing entries.
 - Preserve existing broad topics when the new notes fit them.
 - Add a new topic only when the digest clearly introduces a distinct overarching area.
 - Add or adjust subtopics/classes inside an existing topic when that is enough.
@@ -2687,6 +2723,13 @@ Return only topicGroups.`;
     const nextAssessment = { ...assessment, status: assessment.status === "completed" ? "upcoming" : "completed" };
     if (hasFirebase && db) await setDoc(doc(db, "users", uid, "assessments", assessment.id), nextAssessment, { merge: true });
     await persistAssessmentList(assessments.map((item) => item.id === assessment.id ? nextAssessment : item));
+  };
+
+  const updateAssessment = async (assessment, patch) => {
+    const nextAssessment = { ...assessment, ...patch };
+    if (hasFirebase && db) await setDoc(doc(db, "users", uid, "assessments", assessment.id), patch, { merge: true });
+    await persistAssessmentList(assessments.map((item) => item.id === assessment.id ? nextAssessment : item));
+    showToast("Assessment grade details saved.", "success");
   };
 
   const markLessonIndependent = async (subject, subtopic) => {
@@ -2975,6 +3018,22 @@ representative_patterns must describe abstract question structures without copyi
     setSelectedSubject((current) => current?.id === subject.id ? { ...current, meta: nextMeta } : current);
     setSubjects((current) => current.map((item) => item.id === subject.id ? { ...item, meta: nextMeta } : item));
     return examPlan;
+  };
+
+  const saveCurriculumOrganisation = async (subject, curriculum) => {
+    const topics = curriculum?.topics || [];
+    const names = topics.map((topic) => String(topic.name || "").trim());
+    if (names.some((name) => !name)) throw new Error("Every topic needs a name.");
+    if (new Set(names.map((name) => name.toLowerCase())).size !== names.length) throw new Error("Topic names must be unique.");
+    const lessonIds = topics.flatMap((topic) => (topic.subtopics || []).map((lesson) => lesson.id));
+    if (new Set(lessonIds).size !== lessonIds.length) throw new Error("A lesson cannot appear in more than one topic.");
+    const nextCurriculum = { ...curriculum, manualOrganization: { preserved: true, updatedAt: Date.now() } };
+    const nextMeta = { ...subject.meta, curriculum: nextCurriculum };
+    await saveSubject(subject.id, { meta: nextMeta });
+    const nextSubject = { ...subject, meta: nextMeta };
+    setSelectedSubject(nextSubject);
+    setSubjects((current) => current.map((item) => item.id === subject.id ? nextSubject : item));
+    showToast("Module organisation saved. Lessons, progress, and source links were preserved.", "success");
   };
 
   const generateLesson = async (subject, topic, subtopic, force = false) => {
@@ -3643,7 +3702,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           />
         </>
       ) : screen === "assessments" ? (
-        <AssessmentPlanner subjects={subjects} assessments={assessments} onBack={() => setScreen("dashboard")} onSave={saveAssessment} onDelete={deleteAssessment} onToggleComplete={toggleAssessmentComplete} loading={loading} />
+        <AssessmentPlanner subjects={subjects} assessments={assessments} onBack={() => setScreen("dashboard")} onSave={saveAssessment} onDelete={deleteAssessment} onToggleComplete={toggleAssessmentComplete} onUpdate={updateAssessment} loading={loading} />
       ) : screen === "add" ? (
         <AddSubject onBack={() => setScreen("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} />
       ) : screen === "subject" && selectedSubject ? (
@@ -3657,6 +3716,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onAddModuleFiles={updateModuleFromFiles}
           onAskNotes={() => openNotesAssistant(selectedSubject)}
           onMarkIndependent={(subtopic) => markLessonIndependent(selectedSubject, subtopic)}
+          onSaveCurriculum={(curriculum) => saveCurriculumOrganisation(selectedSubject, curriculum)}
           loading={loading}
           loadingMsg={loadingMsg}
           showToast={showToast}
