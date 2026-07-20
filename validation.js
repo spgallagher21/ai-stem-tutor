@@ -1,4 +1,6 @@
 import { calibrateLearningMinutes } from "./timeEstimates";
+import { normalizeGraphDefinition } from "./graphing";
+import { validateVisualQuestion } from "./visualQuestions";
 
 const QUESTION_TYPES = new Set(["multiple_choice", "fill_blank", "short_answer", "derivation", "long_answer"]);
 const clamp = (value, min, max, fallback) => Number.isFinite(Number(value)) ? Math.min(max, Math.max(min, Number(value))) : fallback;
@@ -15,6 +17,7 @@ export function validateQuestion(question) {
     marks: clamp(question.marks, 1, 100, 5),
     difficulty: clamp(question.difficulty, 1, 5, 3),
     technical_visual_ids: [...new Set((question.technical_visual_ids || []).map(String).filter(Boolean))].slice(0, 4),
+    visual_question: validateVisualQuestion(question.visual_question),
   };
   if (!next.modelAnswer) throw new Error("The AI returned a question without a model answer.");
   if (next.type === "multiple_choice") {
@@ -52,6 +55,7 @@ export function validateLesson(value, validPages = []) {
     sections: value.sections.filter((section) => section && section.heading && section.body).slice(0, 20),
     source_refs: [...new Set((value.source_refs || []).map(String))].slice(0, 30),
     flagged_image_pages: (value.flagged_image_pages || []).filter((item) => !allowed.size || allowed.has(Number(item.page))),
+    graphs: (value.graphs || []).map(normalizeGraphDefinition).filter(Boolean).slice(0, 8),
   };
 }
 

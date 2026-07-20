@@ -470,6 +470,13 @@ select:focus-visible {
 .circuit-schematic line { stroke: #212121; stroke-width: 3; }
 .circuit-schematic rect { fill: #fff; stroke: #212121; stroke-width: 2; }
 .circuit-schematic text { fill: #1a1a1a; font: 14px ui-monospace, monospace; }
+.graph-view { display: grid; gap: 8px; margin: 18px 0; padding: 14px; border: 1px solid #d8d1c5; border-radius: 8px; background: #fff; color: #1a1a1a; overflow: hidden; }
+.graph-view svg { width: 100%; max-height: 460px; background: #fbfaf7; border-radius: 5px; }
+.graph-view .graph-axis { stroke: #4b5563; stroke-width: 1.5; }
+.graph-view .graph-line { fill: none; stroke: #1463d6; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+.graph-view text { fill: #4b5563; font: 13px ui-monospace, monospace; }
+.graph-view figcaption { display: grid; gap: 3px; }
+.question-visuals .graph-view { grid-column: 1 / -1; }
 .assessment-type { display: inline-block; padding: 4px 8px; border-radius: 999px; color: var(--interactive-text); background: var(--interactive); font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .assessment-type.assignment { background: var(--accent-2); }
 .assessment-type.test { background: var(--warning); color: #17120a; }

@@ -30,6 +30,8 @@ import { buildGradeSummary } from "./gradebook";
 import { effectiveLearningMinutes } from "./timeEstimates";
 import { extractWebSources, notesChatScopeKey } from "./webGrounding";
 import { validateVisualRequests, visualCacheKey } from "./visualEnhancements";
+import { buildGraphQuestion, normalizeGraphDefinition, sampleGraph } from "./graphing";
+import { verifyVisualQuestionAgainstAssets } from "./visualQuestions";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
 import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
 import {
@@ -239,6 +241,7 @@ const LESSON_SCHEMA_V2 = {
     diagram_mermaid: { type: "STRING" },
     chemical_structures: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, title: { type: "STRING" }, section_heading: { type: "STRING" }, purpose: { type: "STRING" }, smiles: { type: "STRING" }, compound_name: { type: "STRING" } }, required: ["id", "title", "section_heading", "purpose"] } },
     circuits: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, title: { type: "STRING" }, section_heading: { type: "STRING" }, purpose: { type: "STRING" }, components: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, type: { type: "STRING" }, value: { type: "STRING" }, from: { type: "STRING" }, to: { type: "STRING" } }, required: ["id", "type", "from", "to"] } } }, required: ["id", "title", "section_heading", "purpose", "components"] } },
+    graphs: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, title: { type: "STRING" }, section_heading: { type: "STRING" }, purpose: { type: "STRING" }, equation: { type: "STRING" }, variable: { type: "STRING" }, domain_min: { type: "NUMBER" }, domain_max: { type: "NUMBER" }, x_label: { type: "STRING" }, y_label: { type: "STRING" } }, required: ["id", "title", "section_heading", "purpose", "equation"] } },
     flagged_image_pages: {
       type: "ARRAY",
       items: {
@@ -317,6 +320,8 @@ const EXAM_PLAN_SCHEMA = {
   required: ["question_types"],
 };
 
+const VISUAL_QUESTION_SCHEMA = { type: "OBJECT", properties: { question_id: { type: "STRING" }, type: { type: "STRING", enum: ["identify", "label", "sequence", "spot_fault", "match", "select_correct"] }, domain: { type: "STRING", enum: ["chemistry", "anatomy", "circuits", "astronomy", "biology", "crystal", "physics", "math"] }, prompt_text: { type: "STRING" }, assets: { type: "ARRAY", items: { type: "OBJECT", properties: { asset_id: { type: "STRING" }, render_source: { type: "STRING", enum: ["smiles", "fma_id", "netlist", "taxon_id", "equation", "nasa_id", "pdb_id"] }, render_ref: { type: "STRING" } }, required: ["asset_id", "render_source", "render_ref"] } }, correct_answer: { type: "STRING" }, distractors: { type: "ARRAY", items: { type: "STRING" } }, source_metadata: { type: "OBJECT", properties: { attribution: { type: "STRING" }, license: { type: "STRING" }, original_source_url: { type: "STRING" } } }, verification_method: { type: "STRING", enum: ["canonicalized_match", "coordinate_projection", "simulation_result", "lookup_table"] }, moderation_status: { type: "STRING", enum: ["pending", "approved", "rejected"] } }, required: ["question_id", "type", "domain", "prompt_text", "assets", "correct_answer", "verification_method", "moderation_status"] };
+
 const QUESTION_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -331,6 +336,7 @@ const QUESTION_SCHEMA = {
     requires_calculation: { type: "BOOLEAN" },
     calculation_requests: { type: "ARRAY", items: CALCULATION_SCHEMA },
     technical_visual_ids: { type: "ARRAY", items: { type: "STRING" } },
+    visual_question: VISUAL_QUESTION_SCHEMA,
   },
   required: ["type", "question", "modelAnswer", "hint"],
 };
@@ -1413,6 +1419,7 @@ const TUTORIAL_STEPS = [
   { demo: "upload", title: "Upload notes and past papers", body: "Add one or more lecture-note PDFs. Existing uploads are preserved when you add more. Past papers are optional, but help the question generator mirror the style and mark weighting of your real exams." },
   { demo: "module", title: "AI-organised topics and classes", body: "The AI indexes the notes, creates broad topic groups, and divides them into class-sized lessons. You can add more PDFs later without replacing the earlier module map." },
   { demo: "lesson", title: "Source-grounded lesson notes", body: "Opening a class generates structured notes from the relevant PDF pages, including equations, worked examples, coverage checks, and page references. The calculator—not the language model—evaluates numerical expressions." },
+  { demo: "visuals", title: "Verified STEM visuals and graphs", body: "Chemical structures, circuits, and equation-based graphs are generated from structured source data rather than invented pixels. Practice questions reuse that same source data as the answer key, so grading never depends on re-reading an image." },
   { demo: "notes", title: "Ask questions about your notes", body: "Ask the tutor to clarify anything in the uploaded material. Answers are restricted to your notes and include file-and-page citations; the tutor tells you when the evidence is not present." },
   { demo: "practice", title: "Practice and grading", body: "Practice questions are generated from the selected class. Written answers receive rubric-based partial credit, misconception feedback, and a specific review recommendation. Multiple-choice answers are checked directly." },
   { demo: "handwriting", title: "Upload handwritten maths", body: "Photograph a handwritten answer in good light. Vision transcribes it only when recognition passes reliability checks, then shows the transcription for you to verify before grading. You can always edit or type the maths instead." },
@@ -1429,6 +1436,7 @@ function TutorialMock({ demo }) {
   if (demo === "upload") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Create Example Module</h3><div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}><div className="card" style={{ padding: 16 }}><strong>Lecture notes</strong><p>✓ Topic 1 lectures.pdf</p><p>✓ Topic 2 lectures.pdf</p><span className="btn secondary">Add PDFs</span></div><div className="card" style={{ padding: 16 }}><strong>Past papers (optional)</strong><p>✓ 2025 final exam.pdf</p><span className="btn secondary">Add papers</span></div></div></>);
   if (demo === "module") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Example topic group</h3>{["Core principles", "Analysis and interpretation", "Applied problems"].map((name, index) => <div key={name} className="card" style={{ padding: 14, marginTop: 10, borderColor: index === 1 ? "var(--warning)" : "var(--border)" }}><strong>{name}</strong><p className="muted" style={{ marginBottom: 0 }}>{index === 0 ? "Mastered" : index === 1 ? "Needs review" : "Lesson ready"}</p></div>)}</>);
   if (demo === "lesson") return shell(<><span className="muted mono">Example Module · Lesson</span><h3 className="heading">Analysis and interpretation</h3><h4>1. Core relationship</h4><div><MathRenderer text={"$y = f(x)$"} /></div><div className="card" style={{ padding: 12 }}><strong>Calculator-verified example</strong><p className="muted" style={{ marginBottom: 0 }}>The app formulates the substituted expression, then verifies the numerical result deterministically.</p></div><p className="muted">Source: Topic 1 lectures.pdf, pp. 12–14</p></>);
+  if (demo === "visuals") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Structured visual</h3><GraphView graph={{ id: "tutorial-graph", title: "Quadratic relationship", equation: "x^2 - 3*x + 2", domain_min: -2, domain_max: 5, x_label: "x", y_label: "y" }} compact /><p className="muted">Answer key: the verified equation—not pixels sampled from the curve.</p></>);
   if (demo === "notes") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Ask your notes</h3><div className="card" style={{ padding: 14, marginBottom: 12 }}><strong>You</strong><p style={{ marginBottom: 0 }}>Can you explain the relationship shown in this graph?</p></div><div className="card" style={{ padding: 14 }}><strong>Tutor</strong><p>The notes describe how the measured response changes with the independent variable and identify the limiting assumptions.</p><span className="muted">Topic 1 lectures.pdf · p. 18</span></div></>);
   if (demo === "practice") return shell(<><span className="muted mono">Short answer · 5 marks</span><h3>Explain the effect of damping ratio on resonance.</h3><div className="card" style={{ padding: 14 }}><strong>Partial credit: 80%</strong><p>You identified amplitude reduction correctly. For full marks, also explain the shift in peak frequency.</p><p className="muted" style={{ marginBottom: 0 }}><strong>Review:</strong> Frequency response and damping ratio.</p></div></>);
   if (demo === "handwriting") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Handwritten answer</h3><div className="card" style={{ padding: 28, textAlign: "center", borderStyle: "dashed" }}><strong>📷 answer-page.jpg</strong><p className="muted">Image quality passed · transcription verified</p></div><label className="muted">Check the transcription before grading</label><div className="input" style={{ marginTop: 8 }}>ωₙ = √(k/m) = √(800/2) = 20 rad/s</div></>);
@@ -1887,6 +1895,20 @@ function applyDeterministicCalculationGrade(grading, question, studentAnswer) {
   };
 }
 
+function GraphView({ graph, compact = false }) {
+  const definition = normalizeGraphDefinition(graph); const points = definition ? sampleGraph(definition) : [];
+  if (!definition || !points.some(Boolean)) return null;
+  const finite = points.filter(Boolean); const sortedY = finite.map((point) => point.y).sort((a, b) => a - b); const trim = Math.max(0, Math.floor(sortedY.length * 0.02));
+  let yMin = sortedY[trim]; let yMax = sortedY[sortedY.length - 1 - trim]; if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  const width = 720; const height = compact ? 300 : 410; const pad = 44;
+  const sx = (x) => pad + (x - definition.domain_min) / (definition.domain_max - definition.domain_min) * (width - pad * 2);
+  const sy = (y) => height - pad - (y - yMin) / (yMax - yMin) * (height - pad * 2);
+  const paths = []; let current = [];
+  points.forEach((point) => { if (!point || point.y < yMin || point.y > yMax) { if (current.length > 1) paths.push(current); current = []; } else current.push(point); }); if (current.length > 1) paths.push(current);
+  const xAxis = yMin <= 0 && yMax >= 0 ? sy(0) : height - pad; const yAxis = definition.domain_min <= 0 && definition.domain_max >= 0 ? sx(0) : pad;
+  return <figure className="graph-view"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${definition.title}: y equals ${definition.equation}`}><line className="graph-axis" x1={pad} y1={xAxis} x2={width - pad} y2={xAxis} /><line className="graph-axis" x1={yAxis} y1={pad} x2={yAxis} y2={height - pad} />{paths.map((segment, index) => <polyline key={index} className="graph-line" points={segment.map((point) => `${sx(point.x)},${sy(point.y)}`).join(" ")} />)}<text x={width - pad} y={xAxis - 8} textAnchor="end">{definition.x_label}</text><text x={yAxis + 9} y={pad + 12}>{definition.y_label}</text><text x={pad} y={height - 12}>{definition.domain_min}</text><text x={width - pad} y={height - 12} textAnchor="end">{definition.domain_max}</text></svg><figcaption><strong>{definition.title}</strong><MathRenderer text={`$y = ${definition.equation}$`} paper /></figcaption></figure>;
+}
+
 function CircuitSchematic({ components = [], title }) {
   const safe = components.slice(0, 12);
   const width = 720; const rowHeight = 72; const height = Math.max(150, safe.length * rowHeight + 50);
@@ -1937,6 +1959,7 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
             </div>
           ))}
           {lesson.technical_visuals?.filter((visual) => visual.sectionHeading === section.heading).map((visual, visualIndex) => <VisualEnhancementCard key={visual.id || `${section.heading}-${visualIndex}`} visual={visual} />)}
+          {lesson.graphs?.filter((graph) => graph.section_heading === section.heading).map((graph) => <GraphView key={graph.id} graph={graph} />)}
           {section.real_world_example && <p className="paper-muted"><strong>Real world:</strong> {section.real_world_example}</p>}
         </section>
       ))}
@@ -1962,6 +1985,7 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
       )}
       {lesson.summary && <p className="paper-muted"><strong>Summary:</strong> {lesson.summary}</p>}
       {lesson.technical_visuals?.some((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)) && <section className="note-section"><h2>Core chemical and circuit notation</h2><div className="visual-grid">{lesson.technical_visuals.filter((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)).map((visual, index) => <VisualEnhancementCard key={visual.id || index} visual={visual} />)}</div></section>}
+      {lesson.graphs?.some((graph) => !graph.section_heading || !(lesson.sections || []).some((section) => section.heading === graph.section_heading)) && <section className="note-section"><h2>Function and physics graphs</h2>{lesson.graphs.filter((graph) => !graph.section_heading || !(lesson.sections || []).some((section) => section.heading === graph.section_heading)).map((graph) => <GraphView key={graph.id} graph={graph} />)}</section>}
       {lesson.source_refs?.length > 0 && (
         <div className="source-panel" aria-label="Lesson sources">
           <strong>Grounded in your notes</strong>
@@ -2072,8 +2096,9 @@ function ConfidenceSlider({ value, onChange, id = "answer-confidence" }) {
 function QuestionTechnicalVisuals({ question, lesson }) {
   const ids = new Set(question?.technical_visual_ids || []);
   const visuals = (lesson?.technical_visuals || []).filter((visual) => ids.has(visual.id));
-  if (!visuals.length) return null;
-  return <div className="visual-grid question-visuals">{visuals.map((visual, index) => <VisualEnhancementCard key={visual.id || index} visual={visual} />)}</div>;
+  const graph = question?.graph || (lesson?.graphs || []).find((item) => question?.visual_question?.assets?.some((asset) => asset.render_source === "equation" && asset.asset_id === item.id));
+  if (!visuals.length && !graph) return null;
+  return <div className="visual-grid question-visuals">{graph && <GraphView graph={graph} compact />}{visuals.map((visual, index) => <VisualEnhancementCard key={visual.id || index} visual={visual} />)}</div>;
 }
 
 function ConfidenceFeedback({ feedback }) {
@@ -3268,6 +3293,7 @@ Quality bar:
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
 - Treat chemical structures and circuit definitions as core technical notation, like equations—not optional illustrations. Whenever the lesson teaches a named compound whose bonding/functional groups matter, add a chemical_structures entry with a stable id, the exact section heading where it belongs, its teaching purpose, and a SMILES string only when the attached notes support it confidently (otherwise provide compound_name). Whenever circuit topology matters, add a circuits entry with a stable id, exact section heading, teaching purpose, and every visible/required component as {id,type,value,from,to}. Preserve node connectivity and source values exactly; never invent an obscured bond, stereocentre, component value, or connection. Use empty arrays when neither applies.
 - The prose must explicitly teach how to read each requested chemical structure or circuit. Do not let the visual replace definitions, reasoning, equations, assumptions, or source coverage.
+- Treat graphs as core mathematical notation too. When a section teaches the behaviour of a scalar function or a physics relationship whose shape matters, add a graphs entry with a stable id, the exact section heading, teaching purpose, a Math.js-compatible right-hand-side equation using one independent variable, sensible numeric domain_min/domain_max, and axis labels. Do not include an equals sign in equation and do not invent parameters absent from the notes. Use an empty graphs array when a graph would be decorative or when the relationship cannot be represented faithfully as a single-variable function.
 - Do not perform arithmetic or numerical evaluation yourself. Formulate each required equation symbolically, then add a calculation_requests entry containing the fully substituted expression for the app's deterministic calculator. The expression must be compatible with Math.js, include units where useful (for example "12 kg * 3.5 m/s^2"), and never contain an equals sign or prose. Refer to the result as calculator-verified rather than inventing a numeric result in lesson prose.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
@@ -3385,6 +3411,8 @@ Chemical/circuit question rules:
 - Refer only to the verified molecule/circuit data above. Never invent a bond, stereochemistry, component, value, or node connection.
 - If no verified visual is applicable, use an empty technical_visual_ids array and do not ask a question that depends on seeing one.
 - The model answer must explain the relevant structural feature or topology, not merely name the visual.
+- For a visual-dependent question, use multiple_choice and also populate visual_question. The asset_id must be the exact verified id. For molecules use render_source "smiles" and the exact verified SMILES as render_ref. For circuits use render_source "netlist" and JSON.stringify(components) exactly as render_ref. correct_answer must exactly equal correct_option. Use canonicalized_match for molecule identity and lookup_table for questions whose circuit answer is read directly from a verified component/value/connection. Never claim simulation_result because circuit simulation is not yet connected.
+- For ordinary text questions, omit visual_question.
 
 For non-multiple-choice questions, leave options empty and correct_option empty. Refer to the attached lecture notes document for source material.
 
@@ -3402,8 +3430,13 @@ Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in th
         documentPart,
         generationConfig: { temperature: 0.4, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
       }, { onStatus: setLoadingMsg, label: "practice question response" });
-      const newQuestions = normalizeQuestionBatch(parsed.questions, { expectedCount: QUESTION_BATCH_SIZE })
+      let newQuestions = normalizeQuestionBatch(parsed.questions, { expectedCount: QUESTION_BATCH_SIZE })
+        .map((qItem) => verifyVisualQuestionAgainstAssets(qItem, lesson?.technical_visuals || []))
         .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now() }));
+      if (lesson?.graphs?.length) {
+        const graphQuestion = validateQuestion(buildGraphQuestion(lesson.graphs[Math.floor(Math.random() * lesson.graphs.length)], crypto.randomUUID()));
+        newQuestions = [newQuestions[0], { ...graphQuestion, attempts: [], createdAt: Date.now() }].filter(Boolean).slice(0, QUESTION_BATCH_SIZE);
+      }
       if (!newQuestions.length) throw new Error("The AI didn't return any questions. Try again.");
       const nextBank = [...bank, ...newQuestions];
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "questionBanks", key), { questions: nextBank }, { merge: true });
