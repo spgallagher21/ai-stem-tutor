@@ -28,6 +28,7 @@ import { buildModuleExamScope, moduleBoundaryText } from "./examScope";
 import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTopic } from "./curriculumEditor";
 import { buildGradeSummary } from "./gradebook";
 import { effectiveLearningMinutes } from "./timeEstimates";
+import { extractWebSources, notesChatScopeKey } from "./webGrounding";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
 import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
 import {
@@ -890,7 +891,7 @@ async function prepareAnswerImage(file) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-async function callGemini({ contents, generationConfig, apiKey, documentPart, tools }, { retries = 0, onStatus } = {}) {
+async function callGemini({ contents, generationConfig, apiKey, documentPart, tools, returnCandidate = false }, { retries = 0, onStatus } = {}) {
   const trimmedApiKey = (apiKey || "").trim();
   if (!trimmedApiKey) throw new Error("Enter your Gemini API key before using the tutor.");
 
@@ -943,7 +944,7 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
       }
       const textPart = candidate.content?.parts?.find((part) => part.text)?.text;
       if (!textPart) throw new Error("Gemini returned an empty response.");
-      return textPart;
+      return returnCandidate ? { text: textPart, groundingMetadata: candidate.groundingMetadata || null } : textPart;
     } catch (err) {
       lastErr = err;
       if (err.retryable === false || attempt >= retries) throw lastErr;
@@ -1593,10 +1594,11 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
           </button>
         </section>
 
-        <section className="card" style={{ padding: 20, marginBottom: 28 }}>
+        <details className="card module-exam-panel" style={{ padding: 20, marginBottom: 28 }}>
+          <summary><strong className="heading">Build a module exam</strong><span className="muted">Choose topics and assessment style</span></summary>
+          <div className="module-exam-panel-content">
           <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
             <div>
-              <h2 className="heading" style={{ margin: 0 }}>Build a module exam</h2>
               <p className="muted" style={{ marginBottom: 0 }}>Choose any topics from this module. Uploaded problem sets and past papers will be analysed first so question wording, structure, mark weighting, and difficulty resemble your real assessments.</p>
             </div>
             <div style={{ display: "flex", gap: 8 }}><button className="btn ghost" onClick={() => setExamTopicIds(allTopics.map((topic) => topic.id))}>Select all</button><button className="btn ghost" onClick={() => setExamTopicIds([])}>Clear</button></div>
@@ -1606,7 +1608,8 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
           </div>
           {!subject.meta?.examFiles?.length && <p className="muted" style={{ fontSize: 13 }}>No past papers or problem sets are uploaded, so the exam will use a balanced university-style fallback. Upload assessment PDFs above for closer style matching.</p>}
           <button className="btn" disabled={!examTopicIds.length || loading} onClick={() => onStartModuleExam(buildModuleExamScope(subject, examTopicIds))} style={{ marginTop: 16 }}>{examTopicIds.length === allTopics.length ? "Generate full module exam" : `Generate exam from ${examTopicIds.length} topic${examTopicIds.length === 1 ? "" : "s"}`}</button>
-        </section>
+          </div>
+        </details>
 
         {reorganising ? (
           <section className="card curriculum-editor" style={{ padding: 20 }}>
@@ -1677,7 +1680,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
   );
 }
 
-function NotesAssistant({ subject, messages, onBack, onAsk, onClear, loading }) {
+function NotesAssistant({ subject, lessonScope, messages, onBack, onAsk, onClear, loading }) {
   const [question, setQuestion] = useState("");
   const submit = async (event) => {
     event.preventDefault();
@@ -1692,7 +1695,7 @@ function NotesAssistant({ subject, messages, onBack, onAsk, onClear, loading }) 
       <div className="container notes-assistant-shell">
         <button className="btn ghost" onClick={onBack}>Back to module</button>
         <header className="notes-assistant-header">
-          <div><h1 className="heading" style={{ marginBottom: 6 }}>Ask your notes</h1><p className="muted" style={{ margin: 0 }}>{subject.meta?.name} · answers are restricted to your uploaded PDFs</p></div>
+          <div><h1 className="heading" style={{ marginBottom: 6 }}>Ask your notes</h1><p className="muted" style={{ margin: 0 }}>{subject.meta?.name}{lessonScope?.name ? ` · ${lessonScope.name}` : ""} · uploaded notes are checked first</p></div>
           {messages.length > 0 && <button className="btn ghost" onClick={onClear}>Clear conversation</button>}
         </header>
 
@@ -1703,13 +1706,16 @@ function NotesAssistant({ subject, messages, onBack, onAsk, onClear, loading }) 
               <strong>{message.role === "user" ? "You" : "StudyLoop"}</strong>
               <MathRenderer text={message.text} />
               {message.role === "assistant" && message.supported === false && <p className="citation-warning"><strong>Not fully supported:</strong> the selected note pages did not contain enough verified evidence for a confident answer.</p>}
+              {message.webUsed && <div className="web-answer-notice"><strong>Web search used</strong><span>The uploaded notes did not contain enough information, so this answer includes clearly separated external information.</span></div>}
               {message.uncertainty && <p className="muted"><strong>Uncertainty:</strong> {message.uncertainty}</p>}
               {message.citations?.length > 0 && <div className="notes-citations"><strong>Verified sources</strong>{message.citations.map((citation, index) => <div key={`${citation.file_name}-${citation.page}-${index}`}><span>{citation.file_name}, page {citation.page}</span><small>{citation.claim}</small></div>)}</div>}
-              {message.role === "assistant" && message.citations?.length === 0 && <p className="citation-warning">No matching source page was verified for this answer.</p>}
+              {message.role === "assistant" && message.citations?.length === 0 && !message.webUsed && <p className="citation-warning">No matching source page was verified for this answer.</p>}
+              {message.webSearchFailed && <p className="citation-warning"><strong>Web search unavailable:</strong> the app could not retrieve a reliable external answer, so it has kept the notes-only response.</p>}
+              {message.webSources?.length > 0 && <div className="notes-citations web-sources"><strong>Web sources</strong>{message.webSources.map((source) => <div key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></div>)}</div>}
               {message.follow_up_questions?.length > 0 && <div className="follow-ups">{message.follow_up_questions.map((item) => <button key={item} className="btn ghost" onClick={() => onAsk(item)}>{item}</button>)}</div>}
             </article>
           ))}
-          {loading && <div className="notes-message assistant" role="status">Searching all uploaded notes…</div>}
+          {loading && <div className="notes-message assistant" role="status">{lessonScope?.name ? "Checking the relevant lesson notes…" : "Searching all uploaded notes…"}</div>}
         </section>
 
         <form className="notes-question-form" onSubmit={submit}>
@@ -1849,7 +1855,7 @@ function applyDeterministicCalculationGrade(grading, question, studentAnswer) {
   };
 }
 
-function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
+function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
   const outcomes = lesson.learning_outcomes || [];
   const worked = lesson.worked_example || {};
   return (
@@ -1931,6 +1937,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, loading }) {
       )}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 28 }}>
         <button className="btn" onClick={onPractice}>Go to Practice</button>
+        <button className="btn secondary" onClick={onAskNotes}>Ask about these notes</button>
         <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Regenerate notes</button>
       </div>
     </div>
@@ -2012,6 +2019,7 @@ function ConfidenceFeedback({ feedback }) {
 
 function LearnView({
   subject, active, lesson, phase, setPhase, onBack, onRegenerate, onFetchQuestion, onSubmitAnswer,
+  onAskNotes,
   studentAnswer, setStudentAnswer, selectedOption, setSelectedOption, feedback, loading,
   questionBank, viewingBankQuestion, onOpenBankQuestion, onCloseBankQuestion,
   showNotesPeek, setShowNotesPeek, mistakePattern, answerConfidence, setAnswerConfidence,
@@ -2035,7 +2043,7 @@ function LearnView({
         )}
 
         {phase === "notes" ? (
-          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={onFetchQuestion} />
+          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={onFetchQuestion} onAskNotes={onAskNotes} />
         ) : phase === "bank" ? (
           viewingBankQuestion ? (
             <div className="card" style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
@@ -2225,6 +2233,8 @@ function StemTutor() {
   const [viewingBankQuestion, setViewingBankQuestion] = useState(null);
   const [showNotesPeek, setShowNotesPeek] = useState(false);
   const [notesMessages, setNotesMessages] = useState([]);
+  const [notesScope, setNotesScope] = useState(null);
+  const [notesReturnScreen, setNotesReturnScreen] = useState("subject");
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [dashboardModal, setDashboardModal] = useState(null);
@@ -2743,11 +2753,13 @@ Return only topicGroups.`;
     showToast(undo ? `${subtopic.name} returned to your study plan.` : `${subtopic.name} marked as learned independently.`, "success");
   };
 
-  const openNotesAssistant = async (subject) => {
+  const openNotesAssistant = async (subject, lessonScope = null, returnScreen = "subject") => {
     setSelectedSubject(subject);
+    setNotesScope(lessonScope);
+    setNotesReturnScreen(returnScreen);
     setScreen("notesAssistant");
     try {
-      setNotesMessages(await getArtifact(uid, "notesChat", subject.id) || []);
+      setNotesMessages(await getArtifact(uid, "notesChat", notesChatScopeKey(subject.id, lessonScope?.id)) || []);
     } catch {
       setNotesMessages([]);
     }
@@ -2756,7 +2768,7 @@ Return only topicGroups.`;
   const clearNotesAssistant = async () => {
     if (!selectedSubject) return;
     setNotesMessages([]);
-    await saveArtifact(uid, "notesChat", selectedSubject.id, []);
+    await saveArtifact(uid, "notesChat", notesChatScopeKey(selectedSubject.id, notesScope?.id), []);
   };
 
   const askNotes = async (question) => {
@@ -2767,7 +2779,8 @@ Return only topicGroups.`;
     setLoading(true);
     setLoadingMsg("Searching all uploaded notes...");
     try {
-      const documentContext = await getDocumentContext(selectedSubject, { queryText: question, scoped: true, sourceKind: "notes", maxPages: 30 });
+      const scopedQuestion = notesScope?.name ? `${notesScope.name}: ${question}` : question;
+      const documentContext = await getDocumentContext(selectedSubject, { queryText: scopedQuestion, scoped: true, sourceKind: "notes", maxPages: 30 });
       if (!documentContext?.documentPart) throw new Error("Upload lecture-note PDFs before asking questions.");
       const pageMap = documentContext.pageMap.filter((item) => !item.divider);
       const sourceMap = pageMap.map((item) => `${item.fileName} original page ${item.originalPage} (combined attachment page ${item.mergedPage})`).join("; ");
@@ -2788,6 +2801,8 @@ Rules:
 Conversation:
 ${conversation}
 
+${notesScope?.name ? `The student opened this chat from the lesson "${notesScope.name}". Prefer evidence relevant to that lesson, but use other uploaded module notes when they directly answer the question.` : ""}
+
 Return only the requested JSON.`;
       const result = await callGeminiJSON({
         apiKey: settings.geminiApiKey,
@@ -2797,7 +2812,7 @@ Return only the requested JSON.`;
       }, { onStatus: setLoadingMsg, label: "notes answer" });
 
       const validated = validateNotesAnswer(result, pageMap);
-      const assistantMessage = {
+      let assistantMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
         text: validated.answer,
@@ -2807,12 +2822,28 @@ Return only the requested JSON.`;
         follow_up_questions: validated.follow_up_questions,
         createdAt: Date.now(),
       };
+      if (!validated.supported) {
+        try {
+          setLoadingMsg("The notes do not fully answer this — searching the web...");
+          const webResult = await callGemini({
+            apiKey: settings.geminiApiKey,
+            contents: [{ role: "user", parts: [{ text: `${TUTOR_VOICE_PROMPT}\n\nThe uploaded lecture notes were checked first but did not contain enough verified evidence to answer this university student's question. Use Google Search to provide a concise, accurate answer. Clearly distinguish established facts from uncertainty, preserve equations in Markdown/LaTeX, and do not claim that external facts came from the student's notes.\n\nQuestion: ${question}\n\nWhat the notes check found: ${validated.answer}` }] }],
+            tools: [{ google_search: {} }],
+            generationConfig: { temperature: 0.15 },
+            returnCandidate: true,
+          }, { retries: 2, onStatus: setLoadingMsg });
+          assistantMessage = { ...assistantMessage, text: webResult.text, webUsed: true, webSources: extractWebSources(webResult.groundingMetadata), notesGap: validated.answer };
+        } catch (webError) {
+          console.warn("Web fallback was unavailable", webError);
+          assistantMessage = { ...assistantMessage, webSearchFailed: true };
+        }
+      }
       const nextMessages = [...pendingMessages, assistantMessage].slice(-40);
       setNotesMessages(nextMessages);
-      await saveArtifact(uid, "notesChat", selectedSubject.id, nextMessages);
+      await saveArtifact(uid, "notesChat", notesChatScopeKey(selectedSubject.id, notesScope?.id), nextMessages);
     } catch (error) {
       showToast(error.message, "error");
-      await saveArtifact(uid, "notesChat", selectedSubject.id, pendingMessages);
+      await saveArtifact(uid, "notesChat", notesChatScopeKey(selectedSubject.id, notesScope?.id), pendingMessages);
     } finally {
       setLoading(false);
     }
@@ -3722,7 +3753,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           showToast={showToast}
         />
       ) : screen === "notesAssistant" && selectedSubject ? (
-        <NotesAssistant subject={selectedSubject} messages={notesMessages} onBack={() => setScreen("subject")} onAsk={askNotes} onClear={clearNotesAssistant} loading={loading} />
+        <NotesAssistant subject={selectedSubject} lessonScope={notesScope} messages={notesMessages} onBack={() => setScreen(notesReturnScreen)} onAsk={askNotes} onClear={clearNotesAssistant} loading={loading} />
       ) : screen === "learn" && selectedSubject && active && lesson ? (
         <LearnView
           subject={selectedSubject}
@@ -3732,6 +3763,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           setPhase={setPhase}
           onBack={() => setScreen("subject")}
           onRegenerate={() => generateLesson(selectedSubject, active.topic, active.subtopic, true)}
+          onAskNotes={() => openNotesAssistant(selectedSubject, active.subtopic, "learn")}
           onFetchQuestion={fetchQuestion}
           onSubmitAnswer={submitAnswer}
           studentAnswer={studentAnswer}
