@@ -29,6 +29,7 @@ import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTop
 import { buildGradeSummary } from "./gradebook";
 import { effectiveLearningMinutes } from "./timeEstimates";
 import { extractWebSources, notesChatScopeKey } from "./webGrounding";
+import { validateVisualRequests, visualCacheKey } from "./visualEnhancements";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
 import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
 import {
@@ -236,6 +237,8 @@ const LESSON_SCHEMA_V2 = {
       },
     },
     diagram_mermaid: { type: "STRING" },
+    chemical_structures: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, title: { type: "STRING" }, section_heading: { type: "STRING" }, purpose: { type: "STRING" }, smiles: { type: "STRING" }, compound_name: { type: "STRING" } }, required: ["id", "title", "section_heading", "purpose"] } },
+    circuits: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, title: { type: "STRING" }, section_heading: { type: "STRING" }, purpose: { type: "STRING" }, components: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, type: { type: "STRING" }, value: { type: "STRING" }, from: { type: "STRING" }, to: { type: "STRING" } }, required: ["id", "type", "from", "to"] } } }, required: ["id", "title", "section_heading", "purpose", "components"] } },
     flagged_image_pages: {
       type: "ARRAY",
       items: {
@@ -327,6 +330,7 @@ const QUESTION_SCHEMA = {
     difficulty: { type: "NUMBER" },
     requires_calculation: { type: "BOOLEAN" },
     calculation_requests: { type: "ARRAY", items: CALCULATION_SCHEMA },
+    technical_visual_ids: { type: "ARRAY", items: { type: "STRING" } },
   },
   required: ["type", "question", "modelAnswer", "hint"],
 };
@@ -354,6 +358,26 @@ const GRADING_SCHEMA = {
     },
   },
   required: ["correct", "partial_credit_percent", "feedback", "mistake_type"],
+};
+
+const VISUAL_ENHANCEMENT_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    requests: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          id: { type: "STRING" }, type: { type: "STRING", enum: ["molecule_2d", "structure_3d", "circuit", "reference_image", "anatomy"] },
+          domain: { type: "STRING", enum: ["chemistry", "biology", "astronomy", "medical", "electrical", "anatomy", "general"] },
+          title: { type: "STRING" }, purpose: { type: "STRING" }, query: { type: "STRING" }, smiles: { type: "STRING" }, compound_name: { type: "STRING" }, pdb_id: { type: "STRING" }, fma_id: { type: "STRING" },
+          components: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, type: { type: "STRING" }, value: { type: "STRING" }, from: { type: "STRING" }, to: { type: "STRING" } }, required: ["id", "type", "from", "to"] } },
+        },
+        required: ["id", "type", "domain", "title", "purpose"],
+      },
+    },
+  },
+  required: ["requests"],
 };
 
 const EXAM_SCOPE_REVIEW_SCHEMA = {
@@ -864,6 +888,14 @@ async function describeImage(imageBase64, { onStatus } = {}) {
   });
   const data = await res.json();
   if (!res.ok || data.error) throw new Error(data.error || "Could not describe image.");
+  return data;
+}
+
+async function recognizeStemNotation(imageBase64) {
+  const token = await auth?.currentUser?.getIdToken();
+  const res = await fetch(DESCRIBE_IMAGE_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ imageBase64, mode: "stem_notation" }) });
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error || "Could not recognise chemical or circuit notation.");
   return data;
 }
 
@@ -1855,7 +1887,28 @@ function applyDeterministicCalculationGrade(grading, question, studentAnswer) {
   };
 }
 
-function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
+function CircuitSchematic({ components = [], title }) {
+  const safe = components.slice(0, 12);
+  const width = 720; const rowHeight = 72; const height = Math.max(150, safe.length * rowHeight + 50);
+  const labelFor = (component) => `${component.id || component.type}${component.value ? ` · ${component.value}` : ""}`;
+  return <svg className="circuit-schematic" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title || "Circuit schematic"}>
+    {safe.map((component, index) => {
+      const y = 35 + index * rowHeight; const x1 = 95; const x2 = 625;
+      return <g key={`${component.id}-${index}`}><text x="12" y={y + 5}>{component.from || "node"}</text><line x1={x1} y1={y} x2="290" y2={y} /><rect x="290" y={y - 17} width="140" height="34" rx="5" /><text x="360" y={y + 5} textAnchor="middle">{labelFor(component)}</text><line x1="430" y1={y} x2={x2} y2={y} /><text x="638" y={y + 5}>{component.to || "node"}</text></g>;
+    })}
+  </svg>;
+}
+
+function VisualEnhancementCard({ visual }) {
+  if (visual.status === "review_required") return <article className="visual-card review-required"><strong>{visual.title || "Medical visual"}</strong><p>This visual was identified as potentially useful but is hidden until a human reviews its suitability.</p><small>{visual.reason}</small></article>;
+  if (visual.kind === "molecule_2d") return <article className="visual-card"><h3>{visual.title}</h3><img src={visual.imageUrl} alt={`Verified 2D structure of ${visual.title}`} loading="lazy" /><dl><div><dt>Formula</dt><dd>{visual.formula || "—"}</dd></div><div><dt>Verified identifier</dt><dd>PubChem CID {visual.cid}</dd></div></dl><a href={visual.sourceUrl} target="_blank" rel="noreferrer">Verify in PubChem</a><small>{visual.attribution}</small></article>;
+  if (visual.kind === "structure_3d") return <article className="visual-card visual-card-wide"><h3>{visual.title}</h3><iframe src={visual.viewerUrl} title={`Interactive 3D structure ${visual.pdbId}`} loading="lazy" referrerPolicy="no-referrer" /><div className="visual-card-footer"><a href={visual.sourceUrl} target="_blank" rel="noreferrer">PDB {visual.pdbId}</a><small>{visual.attribution}</small></div></article>;
+  if (visual.kind === "circuit") return <article className="visual-card visual-card-wide"><h3>{visual.title}</h3><CircuitSchematic components={visual.components} title={visual.title} /><small>{visual.attribution}</small></article>;
+  if (visual.kind === "reference_image") return <figure className="visual-card"><img src={visual.imageUrl} alt={visual.title || "Verified reference image"} loading="lazy" /><figcaption><strong>{visual.title}</strong><a href={visual.sourceUrl} target="_blank" rel="noreferrer">Open original source</a><small>{visual.attribution}{visual.license ? ` · ${visual.license}` : ""}</small></figcaption></figure>;
+  return null;
+}
+
+function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNotes, loading }) {
   const outcomes = lesson.learning_outcomes || [];
   const worked = lesson.worked_example || {};
   return (
@@ -1883,6 +1936,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
               <div className="equation-number">({eq.number})</div>
             </div>
           ))}
+          {lesson.technical_visuals?.filter((visual) => visual.sectionHeading === section.heading).map((visual, visualIndex) => <VisualEnhancementCard key={visual.id || `${section.heading}-${visualIndex}`} visual={visual} />)}
           {section.real_world_example && <p className="paper-muted"><strong>Real world:</strong> {section.real_world_example}</p>}
         </section>
       ))}
@@ -1907,6 +1961,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
         </div>
       )}
       {lesson.summary && <p className="paper-muted"><strong>Summary:</strong> {lesson.summary}</p>}
+      {lesson.technical_visuals?.some((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)) && <section className="note-section"><h2>Core chemical and circuit notation</h2><div className="visual-grid">{lesson.technical_visuals.filter((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)).map((visual, index) => <VisualEnhancementCard key={visual.id || index} visual={visual} />)}</div></section>}
       {lesson.source_refs?.length > 0 && (
         <div className="source-panel" aria-label="Lesson sources">
           <strong>Grounded in your notes</strong>
@@ -1915,6 +1970,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
         </div>
       )}
       <VerifiedCalculations calculations={lesson.verified_calculations} paper />
+      {lesson.visual_enhancements?.length > 0 && <section className="note-section stem-visuals"><h2>Interactive and verified visuals</h2><p className="paper-muted">These are supplementary enhancements resolved from structured identifiers after the written lesson was completed. The original notes remain the source of truth.</p><div className="visual-grid">{lesson.visual_enhancements.map((visual, index) => <VisualEnhancementCard key={visual.id || `${visual.kind}-${index}`} visual={visual} />)}</div></section>}
       {lesson.supplementary_images?.length > 0 && (
         <div className="note-section">
           <h2>Supplementary Figures</h2>
@@ -1938,6 +1994,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 28 }}>
         <button className="btn" onClick={onPractice}>Go to Practice</button>
         <button className="btn secondary" onClick={onAskNotes}>Ask about these notes</button>
+        <button className="btn secondary" onClick={onEnhanceVisuals} disabled={loading}>{lesson.visual_enhancements?.length ? "Refresh STEM visuals" : "Enhance with STEM visuals"}</button>
         <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Regenerate notes</button>
       </div>
     </div>
@@ -2012,6 +2069,13 @@ function ConfidenceSlider({ value, onChange, id = "answer-confidence" }) {
   );
 }
 
+function QuestionTechnicalVisuals({ question, lesson }) {
+  const ids = new Set(question?.technical_visual_ids || []);
+  const visuals = (lesson?.technical_visuals || []).filter((visual) => ids.has(visual.id));
+  if (!visuals.length) return null;
+  return <div className="visual-grid question-visuals">{visuals.map((visual, index) => <VisualEnhancementCard key={visual.id || index} visual={visual} />)}</div>;
+}
+
 function ConfidenceFeedback({ feedback }) {
   if (!feedback?.confidence) return null;
   return <p className="muted"><strong>Confidence check ({feedback.confidence}/5 · {CONFIDENCE_LABELS[feedback.confidence]}):</strong> {feedback.confidence_insight || confidenceInsight(feedback)}</p>;
@@ -2019,7 +2083,7 @@ function ConfidenceFeedback({ feedback }) {
 
 function LearnView({
   subject, active, lesson, phase, setPhase, onBack, onRegenerate, onFetchQuestion, onSubmitAnswer,
-  onAskNotes,
+  onAskNotes, onEnhanceVisuals,
   studentAnswer, setStudentAnswer, selectedOption, setSelectedOption, feedback, loading,
   questionBank, viewingBankQuestion, onOpenBankQuestion, onCloseBankQuestion,
   showNotesPeek, setShowNotesPeek, mistakePattern, answerConfidence, setAnswerConfidence,
@@ -2043,13 +2107,14 @@ function LearnView({
         )}
 
         {phase === "notes" ? (
-          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={onFetchQuestion} onAskNotes={onAskNotes} />
+          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={onFetchQuestion} onAskNotes={onAskNotes} onEnhanceVisuals={onEnhanceVisuals} />
         ) : phase === "bank" ? (
           viewingBankQuestion ? (
             <div className="card" style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
               <button className="btn ghost" onClick={onCloseBankQuestion} style={{ marginBottom: 14 }}>Back to list</button>
               <strong style={{ color: "var(--accent-text)" }}>{QUESTION_TYPE_LABELS[viewingBankQuestion.type] || viewingBankQuestion.type}</strong>
               <h2><MathRenderer text={viewingBankQuestion.question} /></h2>
+              <QuestionTechnicalVisuals question={viewingBankQuestion} lesson={lesson} />
               {viewingBankQuestion.attempts?.[0] ? (
                 <>
                   <p className="muted"><strong>Your answer:</strong> {viewingBankQuestion.attempts[0].selectedOption || viewingBankQuestion.attempts[0].studentAnswer}</p>
@@ -2073,6 +2138,7 @@ function LearnView({
               <span className="muted mono">{q.marks ? `${q.marks} marks` : ""}</span>
             </div>
             <h2><MathRenderer text={q.question} /></h2>
+            <QuestionTechnicalVisuals question={q} lesson={lesson} />
             {q.type === "multiple_choice" ? (
               <div className="grid">
                 {(q.options || []).map((opt) => (
@@ -3051,6 +3117,85 @@ representative_patterns must describe abstract question structures without copyi
     return examPlan;
   };
 
+  const recognizeCoreVisualsFromSourcePages = async (draftLesson, documentContext, subtopic) => {
+    if (!documentContext?.bytes) return { chemical_structures: [], circuits: [] };
+    const candidates = buildImageCandidates(draftLesson, documentContext, subtopic)
+      .filter((candidate) => /chem|molecul|structure|bond|reaction|circuit|schematic|resistor|capacitor|inductor|diode|transistor|electrical/i.test(`${candidate.reason || ""}`))
+      .slice(0, 5);
+    const found = { chemical_structures: [], circuits: [] };
+    for (const candidate of candidates) {
+      try {
+        const page = Math.round(Number(candidate.page));
+        setLoadingMsg(`Checking chemical and circuit notation on page ${page}...`);
+        const imageBase64 = await rasterizePdfPage(documentContext.bytes, page);
+        const recognition = await recognizeStemNotation(imageBase64);
+        const sectionFor = (item) => (draftLesson.sections || []).find((section) => JSON.stringify(section).toLowerCase().includes(String(item.compound_name || item.title || item.id).toLowerCase()))?.heading || draftLesson.sections?.[0]?.heading || "";
+        found.chemical_structures.push(...(recognition.chemical_structures || []).map((item) => ({ ...item, id: `${item.id}-p${page}`, section_heading: sectionFor(item), purpose: `Source-page chemical structure verified from combined page ${page}.` })));
+        found.circuits.push(...(recognition.circuits || []).map((item) => ({ ...item, id: `${item.id}-p${page}`, section_heading: sectionFor(item), purpose: `Source-page circuit topology verified from combined page ${page}.` })));
+      } catch (error) { console.warn("Source-page STEM notation recognition skipped", error); }
+    }
+    return found;
+  };
+
+  const resolveVisualRequests = async (subject, rawRequests) => {
+    const requests = validateVisualRequests({ requests: rawRequests }).map((request) => ({ ...request, cacheKey: visualCacheKey(request) }));
+    if (!requests.length) return [];
+    const token = await auth?.currentUser?.getIdToken();
+    const response = await fetch("/api/resolve-content", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ cacheNamespace: subject.id, requests }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Visual resolver unavailable.");
+    return (data.results || []).filter((item) => item.status === "ready" || item.status === "review_required");
+  };
+
+  const resolveCoreTechnicalVisuals = async (draftLesson, subject) => {
+    const requests = [
+      ...(draftLesson.chemical_structures || []).map((item) => ({ ...item, type: "molecule_2d", domain: "chemistry" })),
+      ...(draftLesson.circuits || []).map((item) => ({ ...item, type: "circuit", domain: "electrical" })),
+    ];
+    if (!requests.length) return [];
+    setLoadingMsg("Verifying chemical structures and circuits...");
+    try { return await resolveVisualRequests(subject, requests); }
+    catch (error) { console.warn("Core technical visuals skipped", error); return []; }
+  };
+
+  const buildStemVisualEnhancements = async (draftLesson, subject, topic, subtopic) => {
+    try {
+      setLoadingMsg("Identifying useful STEM visuals...");
+      const requestPrompt = `${TUTOR_VOICE_PROMPT}
+
+The source-grounded lesson below is already complete and approved. Do not rewrite, shorten, correct, or replace any of it. This is a separate visual-enhancement pass only.
+
+Identify at most 8 optional visuals that materially improve understanding and can be resolved from structured identifiers. Chemical structures and circuits are already handled by the first lesson pass, so never request molecule_2d or circuit here. Return no request when prose, equations, Mermaid, or an existing source-page figure already explains the concept adequately.
+
+Rules:
+- For experimentally determined proteins/macromolecules use structure_3d only when a specific four-character PDB ID is confidently known. Never invent an ID.
+- For biology reference imagery use reference_image with domain biology and a precise scientific-name query where possible.
+- For astronomy imagery use reference_image with domain astronomy and a precise object or mission query.
+- For anatomy use anatomy with an FMA ID only when confident. It will be held for human review.
+- Medical/injury imagery must use domain medical and will be held for human review.
+- Do not request generic decorative imagery, copyrighted textbook figures, or visuals outside this module/lesson.
+- Structured identifiers are untrusted suggestions and will be independently checked by the resolver.
+
+Module: ${subject.meta?.name}
+Topic: ${topic.name}
+Lesson: ${subtopic.name}
+Approved lesson JSON:
+${JSON.stringify({ sections: draftLesson.sections, worked_example: draftLesson.worked_example, summary: draftLesson.summary, source_refs: draftLesson.source_refs })}
+
+Return only the requested JSON.`;
+      const suggestion = await callGeminiJSON({
+        apiKey: settings.geminiApiKey,
+        contents: [{ role: "user", parts: [{ text: requestPrompt }] }],
+        generationConfig: { temperature: 0.05, responseMimeType: "application/json", responseSchema: VISUAL_ENHANCEMENT_SCHEMA },
+      }, { onStatus: setLoadingMsg, label: "STEM visual enhancement" });
+      setLoadingMsg("Verifying visual identifiers and licences...");
+      return await resolveVisualRequests(subject, suggestion.requests || []);
+    } catch (error) {
+      console.warn("STEM visual enhancement skipped", error);
+      return [];
+    }
+  };
+
   const saveCurriculumOrganisation = async (subject, curriculum) => {
     const topics = curriculum?.topics || [];
     const names = topics.map((topic) => String(topic.name || "").trim());
@@ -3121,6 +3266,8 @@ Quality bar:
 - If any original page in the attached document contains a complex diagram, graph, chart, circuit, table, scan, micrograph, pathway, or figure that a text description alone would not capture well, list its original page number and a short reason in flagged_image_pages. Do not flag pages that are ordinary text slides, title slides, or bullet points.
 - The written lesson must still explain the content fully in text. Any later supplementary figures are optional additions, not replacements for explanation.
 - If the notes include a derivation, reproduce the derivation step by step rather than summarising it.
+- Treat chemical structures and circuit definitions as core technical notation, like equations—not optional illustrations. Whenever the lesson teaches a named compound whose bonding/functional groups matter, add a chemical_structures entry with a stable id, the exact section heading where it belongs, its teaching purpose, and a SMILES string only when the attached notes support it confidently (otherwise provide compound_name). Whenever circuit topology matters, add a circuits entry with a stable id, exact section heading, teaching purpose, and every visible/required component as {id,type,value,from,to}. Preserve node connectivity and source values exactly; never invent an obscured bond, stereocentre, component value, or connection. Use empty arrays when neither applies.
+- The prose must explicitly teach how to read each requested chemical structure or circuit. Do not let the visual replace definitions, reasoning, equations, assumptions, or source coverage.
 - Do not perform arithmetic or numerical evaluation yourself. Formulate each required equation symbolically, then add a calculation_requests entry containing the fully substituted expression for the app's deterministic calculator. The expression must be compatible with Math.js, include units where useful (for example "12 kg * 3.5 m/s^2"), and never contain an equals sign or prose. Refer to the result as calculator-verified rather than inventing a numeric result in lesson prose.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
@@ -3135,8 +3282,13 @@ Before returning, silently self-check every equation, claim, and worked-example 
 
       const finalLesson = validateLesson(rawLesson, documentContext?.pages || []);
       finalLesson.verified_calculations = verifyCalculationRequests(finalLesson.calculation_requests);
+      const recognizedCoreVisuals = await recognizeCoreVisualsFromSourcePages(finalLesson, documentContext, subtopic);
+      finalLesson.chemical_structures = [...(finalLesson.chemical_structures || []), ...recognizedCoreVisuals.chemical_structures];
+      finalLesson.circuits = [...(finalLesson.circuits || []), ...recognizedCoreVisuals.circuits];
+      const technical_visuals = await resolveCoreTechnicalVisuals(finalLesson, subject);
       const supplementary_images = await buildSupplementaryImages(finalLesson, documentContext, subtopic);
-      const payload = { ...finalLesson, supplementary_images, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
+      const visual_enhancements = await buildStemVisualEnhancements(finalLesson, subject, topic, subtopic);
+      const payload = { ...finalLesson, technical_visuals, supplementary_images, visual_enhancements, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
       await saveArtifact(uid, "lesson", key, { ...payload, generatedAt: Date.now() });
       setLesson(payload);
@@ -3148,6 +3300,24 @@ Before returning, silently self-check every equation, claim, and worked-example 
       setViewingBankQuestion(null);
     } catch (err) {
       showToast(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const enhanceCurrentLessonVisuals = async () => {
+    if (!selectedSubject || !active || !lesson) return;
+    setLoading(true);
+    try {
+      const visual_enhancements = await buildStemVisualEnhancements(lesson, selectedSubject, active.topic, active.subtopic);
+      const nextLesson = { ...lesson, visual_enhancements, visualEnhancementUpdatedAt: Date.now() };
+      const key = lessonKey(selectedSubject.id, active.subtopic.id);
+      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), { visual_enhancements, visualEnhancementUpdatedAt: serverTimestamp() }, { merge: true });
+      await saveArtifact(uid, "lesson", key, nextLesson);
+      setLesson(nextLesson);
+      showToast(visual_enhancements.length ? `${visual_enhancements.length} verified visual enhancement${visual_enhancements.length === 1 ? "" : "s"} added.` : "The lesson is already clear without an additional verified visual.", "success");
+    } catch (error) {
+      showToast(error.message, "error");
     } finally {
       setLoading(false);
     }
@@ -3206,6 +3376,15 @@ Multiple-choice formatting rules:
 Question 2 type: ${followUpType.type}. Style guidance from the real past papers: ${followUpType.style_notes || plan.overall_notes || "standard exam phrasing"}.
 Difficulty: ${adaptiveDifficulty}/5.
 Marks: around ${followUpType.avg_marks || 5}.
+
+Verified core technical visuals available for this lesson:
+${JSON.stringify((lesson?.technical_visuals || []).map(({ id, kind, title, cid, smiles, formula, components, purpose }) => ({ id, kind, title, cid, smiles, formula, components, purpose })))}
+
+Chemical/circuit question rules:
+- When a question requires the student to interpret a chemical structure or circuit, put the relevant verified visual id(s) in technical_visual_ids so the visual appears with the question.
+- Refer only to the verified molecule/circuit data above. Never invent a bond, stereochemistry, component, value, or node connection.
+- If no verified visual is applicable, use an empty technical_visual_ids array and do not ask a question that depends on seeing one.
+- The model answer must explain the relevant structural feature or topology, not merely name the visual.
 
 For non-multiple-choice questions, leave options empty and correct_option empty. Refer to the attached lecture notes document for source material.
 
@@ -3764,6 +3943,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onBack={() => setScreen("subject")}
           onRegenerate={() => generateLesson(selectedSubject, active.topic, active.subtopic, true)}
           onAskNotes={() => openNotesAssistant(selectedSubject, active.subtopic, "learn")}
+          onEnhanceVisuals={enhanceCurrentLessonVisuals}
           onFetchQuestion={fetchQuestion}
           onSubmitAnswer={submitAnswer}
           studentAnswer={studentAnswer}

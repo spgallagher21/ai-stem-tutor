@@ -451,6 +451,25 @@ select:focus-visible {
 .web-answer-notice { display: grid; gap: 3px; margin: 14px 0; padding: 12px 14px; border: 1px solid var(--warning); border-radius: 8px; background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .web-answer-notice span { color: var(--text-muted); font-size: 13px; }
 .web-sources a { color: var(--accent-text); overflow-wrap: anywhere; }
+.stem-visuals { margin-top: 28px; }
+.visual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.visual-card { display: grid; align-content: start; gap: 10px; margin: 0; padding: 16px; border: 1px solid #d8d1c5; border-radius: 8px; background: #fff; color: #1a1a1a; overflow: hidden; }
+.visual-card-wide { grid-column: 1 / -1; }
+.visual-card h3 { margin: 0; }
+.visual-card img { width: 100%; max-height: 390px; object-fit: contain; border-radius: 5px; background: #fff; }
+.visual-card iframe { width: 100%; min-height: 480px; border: 1px solid #d8d1c5; border-radius: 6px; background: #111; }
+.visual-card a { color: #075fb8; font-weight: 600; }
+.visual-card small { display: block; color: #615b52; }
+.visual-card dl, .visual-card dl div { display: flex; gap: 8px; margin: 0; }
+.visual-card dl { flex-wrap: wrap; }
+.visual-card dt { font-weight: 700; }
+.visual-card dd { margin: 0 12px 0 0; }
+.visual-card-footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.visual-card.review-required { border-color: #b7791f; background: #fff8e6; }
+.circuit-schematic { width: 100%; max-height: 520px; background: #fbfaf7; border: 1px solid #d8d1c5; border-radius: 6px; }
+.circuit-schematic line { stroke: #212121; stroke-width: 3; }
+.circuit-schematic rect { fill: #fff; stroke: #212121; stroke-width: 2; }
+.circuit-schematic text { fill: #1a1a1a; font: 14px ui-monospace, monospace; }
 .assessment-type { display: inline-block; padding: 4px 8px; border-radius: 999px; color: var(--interactive-text); background: var(--interactive); font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .assessment-type.assignment { background: var(--accent-2); }
 .assessment-type.test { background: var(--warning); color: #17120a; }
