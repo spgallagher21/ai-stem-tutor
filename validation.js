@@ -14,6 +14,7 @@ export function validateQuestion(question) {
     hint: String(question.hint || "").trim(),
     marks: clamp(question.marks, 1, 100, 5),
     difficulty: clamp(question.difficulty, 1, 5, 3),
+    technical_visual_ids: [...new Set((question.technical_visual_ids || []).map(String).filter(Boolean))].slice(0, 4),
   };
   if (!next.modelAnswer) throw new Error("The AI returned a question without a model answer.");
   if (next.type === "multiple_choice") {

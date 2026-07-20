@@ -1,5 +1,6 @@
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODELS = (process.env.OPENROUTER_VISION_MODELS || "qwen/qwen2.5-vl-32b-instruct:free,openrouter/free").split(",").map((model) => model.trim()).filter(Boolean);
+const STEM_MODELS = (process.env.OPENROUTER_STEM_VISION_MODELS || "qwen/qwen3-vl-32b-instruct,google/gemini-3.1-flash-lite").split(",").map((model) => model.trim()).filter(Boolean);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -84,6 +85,33 @@ Return JSON only:
   return { reliable, transcription: String(transcript.transcription_markdown || ""), equations: transcript.equations_latex || [], finalAnswer: String(transcript.final_answer || ""), confidence, verifierConfidence, imageQuality: transcript.image_quality || "poor", ambiguities, discrepancies, modelUsed: transcriptModel, verifierModel };
 }
 
+async function recognizeStemNotation(imageBase64) {
+  const prompt = `Inspect this single lecture-note page specifically for chemical structure diagrams and electrical circuit schematics. Do not describe ordinary prose, decorative images, graphs, or equations.
+
+For every chemical structure, transcribe only bonds and stereochemistry that are clearly visible. Give a SMILES string only when every material atom, bond order, charge, ring closure, and stereochemical marker is unambiguous; otherwise leave smiles empty and record ambiguities. For every circuit, transcribe component ids/types/values and explicit node connectivity. Never infer a hidden wire, value, bond, or stereocentre.
+
+Return JSON only:
+{"chemical_structures":[{"id":"chem-1","title":"...","compound_name":"... or empty","smiles":"... or empty","confidence":0.0,"ambiguities":["..."]}],"circuits":[{"id":"circuit-1","title":"...","confidence":0.0,"components":[{"id":"R1","type":"resistor","value":"10 kOhm","from":"node-a","to":"node-b"}],"ambiguities":["..."]}]}`;
+  const first = await callVision(STEM_MODELS[0], prompt, imageBase64, { json: true });
+  const recognition = parseJsonContent(first.content);
+  const verificationPrompt = `Independently verify the proposed chemistry/circuit transcription against the pixels. Reject an item if any atom, bond order, stereochemistry, charge, component type, component value, node, or wire is missing, invented, or ambiguous. Do not repair it and do not solve the circuit.
+
+PROPOSED_START
+${JSON.stringify(recognition)}
+PROPOSED_END
+
+Return JSON only: {"approved_chemical_ids":["..."],"approved_circuit_ids":["..."],"confidence":0.0,"discrepancies":["..."]}`;
+  const second = await callVision(STEM_MODELS[1] || STEM_MODELS[0], verificationPrompt, imageBase64, { json: true });
+  const verification = parseJsonContent(second.content);
+  const approvedChemicals = new Set(verification.approved_chemical_ids || []); const approvedCircuits = new Set(verification.approved_circuit_ids || []);
+  const reliable = Number(verification.confidence || 0) >= 0.9 && !(verification.discrepancies || []).length;
+  return {
+    chemical_structures: reliable ? (recognition.chemical_structures || []).filter((item) => approvedChemicals.has(item.id) && Number(item.confidence || 0) >= 0.9 && !(item.ambiguities || []).length && (item.smiles || item.compound_name)) : [],
+    circuits: reliable ? (recognition.circuits || []).filter((item) => approvedCircuits.has(item.id) && Number(item.confidence || 0) >= 0.9 && !(item.ambiguities || []).length && item.components?.length) : [],
+    reliable, modelUsed: first.model, verifierModel: second.model,
+  };
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -107,6 +135,11 @@ export default async function handler(req, res) {
     } catch (error) {
       return res.status(502).json({ error: error.message || "Handwritten maths transcription failed." });
     }
+  }
+
+  if (mode === "stem_notation") {
+    try { return res.status(200).json(await recognizeStemNotation(imageBase64)); }
+    catch (error) { return res.status(502).json({ error: error.message || "STEM notation recognition failed." }); }
   }
 
   const prompt = "Describe this lecture slide image in detail for a student who cannot see it. If it is a diagram, chart, scan, histology image, table, circuit, graph, or figure, describe its structure, labeled parts, axes, trends, spatial relationships, or steps precisely enough that someone could reason about it from your description alone. If it is decorative or mostly text-only, say so plainly.";
