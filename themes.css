@@ -390,6 +390,11 @@ select:focus-visible {
 }
 
 .source-panel { margin-top: 24px; padding: 16px; border: 1px solid #d8d1c5; border-radius: 8px; background: #f7f2e9; }
+.online-enrichment { margin: -4px 0 26px; padding: 18px 20px; border: 1px solid color-mix(in srgb, var(--accent) 35%, #d8d1c5); border-left: 5px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 6%, #fffdf8); color: #29251f; }
+.online-enrichment h3 { margin: 4px 0 10px; font-family: var(--font-heading); }
+.enrichment-label { color: var(--accent-strong, var(--accent)); font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.external-sources { border-left: 4px solid var(--accent); }
+.source-chip[href] { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .source-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .source-chip { border: 1px solid #c9c0b2; border-radius: 999px; padding: 6px 10px; font-size: 12px; }
 .rubric { display: grid; gap: 8px; margin: 16px 0; }
@@ -453,6 +458,7 @@ select:focus-visible {
 .web-sources a { color: var(--accent-text); overflow-wrap: anywhere; }
 .stem-visuals { margin-top: 28px; }
 .visual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.anchored-visuals { margin-top: 18px; }
 .visual-card { display: grid; align-content: start; gap: 10px; margin: 0; padding: 16px; border: 1px solid #d8d1c5; border-radius: 8px; background: #fff; color: #1a1a1a; overflow: hidden; }
 .visual-card-wide { grid-column: 1 / -1; }
 .visual-card h3 { margin: 0; }

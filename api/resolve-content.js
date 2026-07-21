@@ -5,6 +5,7 @@ globalThis.__studyLoopContentCache = cache;
 const LICENSE_PATTERN = /(creativecommons\.org\/(publicdomain|licenses\/(by|by-sa))|\bCC0\b|\bCC BY(?:-SA)?\b)/i;
 
 function clean(value, max = 300) { return String(value || "").trim().slice(0, max); }
+function stripHtml(value) { return clean(String(value || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " "), 300); }
 async function getJson(url) {
   const response = await fetchWithTimeout(url, { headers: { Accept: "application/json", "User-Agent": "StudyLoop/1.0 educational-content-resolver" } }, 15_000);
   if (!response.ok) throw new Error(`Trusted source returned ${response.status}.`);
@@ -46,6 +47,23 @@ async function resolveAstronomyImage(request) {
   return { status: "ready", kind: "reference_image", title: request.title || metadata.title || request.query, imageUrl: image.href, sourceUrl: `https://images.nasa.gov/details/${encodeURIComponent(metadata.nasa_id)}`, license: "NASA media usage guidelines", attribution: `${metadata.center} · NASA · ${metadata.nasa_id}` };
 }
 
+async function resolveCommonsImage(request) {
+  const query = clean(request.query || request.title, 180);
+  if (!query) throw new Error("A precise image query is required.");
+  const url = new URL("https://commons.wikimedia.org/w/api.php");
+  url.search = new URLSearchParams({ action: "query", generator: "search", gsrsearch: query, gsrnamespace: "6", gsrlimit: "12", prop: "imageinfo", iiprop: "url|mime|extmetadata", iiextmetadatafilter: "LicenseShortName|LicenseUrl|Artist|Credit", iiextmetadatalanguage: "en", iiurlwidth: "1400", format: "json", formatversion: "2" }).toString();
+  const data = await getJson(url.toString());
+  for (const page of data?.query?.pages || []) {
+    const info = page?.imageinfo?.[0]; const metadata = info?.extmetadata || {};
+    const license = stripHtml(metadata.LicenseShortName?.value || metadata.License?.value);
+    const licenseUrl = clean(metadata.LicenseUrl?.value, 500);
+    if (!info?.url || !String(info.mime || "").startsWith("image/") || !LICENSE_PATTERN.test(`${license} ${licenseUrl}`)) continue;
+    const creator = stripHtml(metadata.Artist?.value || metadata.Credit?.value);
+    return { status: "ready", kind: "reference_image", title: request.title || clean(page.title?.replace(/^File:/, ""), 120) || query, imageUrl: info.thumburl || info.url, sourceUrl: info.descriptionurl || `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title)}`, license: license || licenseUrl, attribution: [creator, "Wikimedia Commons"].filter(Boolean).join(" · ") };
+  }
+  throw new Error("Wikimedia Commons returned no relevant image with a confirmed reusable licence.");
+}
+
 async function resolve(request) {
   if (request.domain === "medical" || request.domain === "anatomy" || request.type === "anatomy") return { status: "review_required", kind: request.type, title: request.title, reason: "Medical and anatomy visuals require explicit human review before student display.", fmaId: request.fma_id || "" };
   if (request.type === "molecule_2d") return resolveMolecule(request);
@@ -53,13 +71,14 @@ async function resolve(request) {
   if (request.type === "circuit") return { status: "ready", kind: "circuit", title: request.title, components: request.components || [], attribution: "Deterministic StudyLoop schematic" };
   if (request.type === "reference_image" && request.domain === "biology") return resolveBiologyImage(request);
   if (request.type === "reference_image" && request.domain === "astronomy") return resolveAstronomyImage(request);
+  if (request.type === "reference_image") return resolveCommonsImage(request);
   return { status: "unsupported", kind: request.type, title: request.title, reason: "No licence-safe resolver is available for this request." };
 }
 
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.setHeader("Allow", "POST"); return res.status(405).json({ error: "Method not allowed" }); }
   if (!await secureRequest(req, res, { limit: 40, maxBodyBytes: 100_000 })) return;
-  const requests = Array.isArray(req.body?.requests) ? req.body.requests.slice(0, 8) : [];
+  const requests = Array.isArray(req.body?.requests) ? req.body.requests.slice(0, 12) : [];
   const results = [];
   for (const request of requests) {
     const key = clean(req.body?.cacheNamespace, 100) + ":" + clean(request.cacheKey, 700);
