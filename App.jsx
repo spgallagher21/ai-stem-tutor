@@ -30,6 +30,7 @@ import { buildGradeSummary } from "./gradebook";
 import { effectiveLearningMinutes } from "./timeEstimates";
 import { extractWebSources, notesChatScopeKey } from "./webGrounding";
 import { validateVisualRequests, visualCacheKey } from "./visualEnhancements";
+import { validateEnrichmentPlan } from "./lessonEnrichment";
 import { buildGraphQuestion, normalizeGraphDefinition, sampleGraph } from "./graphing";
 import { verifyVisualQuestionAgainstAssets } from "./visualQuestions";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
@@ -277,6 +278,7 @@ const SUPPLEMENTARY_IMAGE_SCHEMA = {
           include: { type: "BOOLEAN" },
           caption: { type: "STRING" },
           alt_text: { type: "STRING" },
+          section_heading: { type: "STRING" },
         },
         required: ["page", "include"],
       },
@@ -375,8 +377,9 @@ const VISUAL_ENHANCEMENT_SCHEMA = {
         type: "OBJECT",
         properties: {
           id: { type: "STRING" }, type: { type: "STRING", enum: ["molecule_2d", "structure_3d", "circuit", "reference_image", "anatomy"] },
-          domain: { type: "STRING", enum: ["chemistry", "biology", "astronomy", "medical", "electrical", "anatomy", "general"] },
+          domain: { type: "STRING", enum: ["chemistry", "biology", "astronomy", "medical", "electrical", "anatomy", "physics", "math", "crystal", "general"] },
           title: { type: "STRING" }, purpose: { type: "STRING" }, query: { type: "STRING" }, smiles: { type: "STRING" }, compound_name: { type: "STRING" }, pdb_id: { type: "STRING" }, fma_id: { type: "STRING" },
+          section_heading: { type: "STRING" },
           components: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, type: { type: "STRING" }, value: { type: "STRING" }, from: { type: "STRING" }, to: { type: "STRING" } }, required: ["id", "type", "from", "to"] } },
         },
         required: ["id", "type", "domain", "title", "purpose"],
@@ -384,6 +387,24 @@ const VISUAL_ENHANCEMENT_SCHEMA = {
     },
   },
   required: ["requests"],
+};
+
+const ENRICHMENT_PLAN_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    enrichments: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          id: { type: "STRING" }, after_section_heading: { type: "STRING" }, heading: { type: "STRING" }, body: { type: "STRING" }, why_needed: { type: "STRING" },
+        },
+        required: ["id", "after_section_heading", "heading", "body", "why_needed"],
+      },
+    },
+    visual_requests: VISUAL_ENHANCEMENT_SCHEMA.properties.requests,
+  },
+  required: ["enrichments", "visual_requests"],
 };
 
 const EXAM_SCOPE_REVIEW_SCHEMA = {
@@ -1419,7 +1440,7 @@ const TUTORIAL_STEPS = [
   { demo: "upload", title: "Upload notes and past papers", body: "Add one or more lecture-note PDFs. Existing uploads are preserved when you add more. Past papers are optional, but help the question generator mirror the style and mark weighting of your real exams." },
   { demo: "module", title: "AI-organised topics and classes", body: "The AI indexes the notes, creates broad topic groups, and divides them into class-sized lessons. You can add more PDFs later without replacing the earlier module map." },
   { demo: "lesson", title: "Source-grounded lesson notes", body: "Opening a class generates structured notes from the relevant PDF pages, including equations, worked examples, coverage checks, and page references. The calculator—not the language model—evaluates numerical expressions." },
-  { demo: "visuals", title: "Verified STEM visuals and graphs", body: "Chemical structures, circuits, and equation-based graphs are generated from structured source data rather than invented pixels. Practice questions reuse that same source data as the answer key, so grading never depends on re-reading an image." },
+  { demo: "visuals", title: "Layered notes, verified visuals and graphs", body: "Notes are built in three layers: your uploads first, clearly labelled online enrichment where a concept needs more depth, then relevant visuals placed beside the section they explain. Chemical structures, circuits, and equation-based graphs use structured source data rather than invented pixels." },
   { demo: "notes", title: "Ask questions about your notes", body: "Ask the tutor to clarify anything in the uploaded material. Answers are restricted to your notes and include file-and-page citations; the tutor tells you when the evidence is not present." },
   { demo: "practice", title: "Practice and grading", body: "Practice questions are generated from the selected class. Written answers receive rubric-based partial credit, misconception feedback, and a specific review recommendation. Multiple-choice answers are checked directly." },
   { demo: "handwriting", title: "Upload handwritten maths", body: "Photograph a handwritten answer in good light. Vision transcribes it only when recognition passes reliability checks, then shows the transcription for you to verify before grading. You can always edit or type the maths instead." },
@@ -1930,6 +1951,22 @@ function VisualEnhancementCard({ visual }) {
   return null;
 }
 
+function SupplementaryFigure({ image }) {
+  return <figure style={{ margin: "16px 0 0" }}>
+    <img src={`data:image/jpeg;base64,${image.imageBase64}`} alt={image.alt_text || image.caption || `Supplementary figure from page ${image.page}`} style={{ width: "100%", border: "1px solid #d8d1c5", borderRadius: 6 }} />
+    <figcaption className="paper-muted" style={{ marginTop: 8 }}><strong>From your notes, page {image.page}:</strong> {image.caption}</figcaption>
+  </figure>;
+}
+
+function OnlineEnrichment({ enrichment }) {
+  return <aside className="online-enrichment">
+    <div className="enrichment-label">Online enrichment</div>
+    <h3>{enrichment.heading}</h3>
+    <MathRenderer text={enrichment.body} paper />
+    {enrichment.why_needed && <p className="paper-muted"><strong>Why this was added:</strong> {enrichment.why_needed}</p>}
+  </aside>;
+}
+
 function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNotes, loading }) {
   const outcomes = lesson.learning_outcomes || [];
   const worked = lesson.worked_example || {};
@@ -1942,8 +1979,11 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
         </div>
       )}
       {lesson.diagram_mermaid && <MermaidRenderer chart={lesson.diagram_mermaid} paper />}
-      {(lesson.sections || []).map((section, idx) => (
-        <section className="note-section" key={`${section.heading}-${idx}`}>
+      {(lesson.sections || []).map((section, idx) => {
+        const anchoredVisuals = (lesson.visual_enhancements || []).filter((visual) => visual.sectionHeading === section.heading);
+        const sourceFigures = (lesson.supplementary_images || []).filter((image) => image.sectionHeading === section.heading);
+        const enrichment = (lesson.online_enrichments || []).find((item) => item.after_section_heading === section.heading);
+        return <React.Fragment key={`${section.heading}-${idx}`}><section className="note-section">
           <h2>{section.heading}</h2>
           <MathRenderer text={section.body} paper />
           {section.key_points?.length > 0 && (
@@ -1960,9 +2000,11 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
           ))}
           {lesson.technical_visuals?.filter((visual) => visual.sectionHeading === section.heading).map((visual, visualIndex) => <VisualEnhancementCard key={visual.id || `${section.heading}-${visualIndex}`} visual={visual} />)}
           {lesson.graphs?.filter((graph) => graph.section_heading === section.heading).map((graph) => <GraphView key={graph.id} graph={graph} />)}
+          {sourceFigures.map((image, imageIndex) => <SupplementaryFigure key={`${image.page}-${imageIndex}`} image={image} />)}
+          {anchoredVisuals.length > 0 && <div className="visual-grid anchored-visuals">{anchoredVisuals.map((visual, visualIndex) => <VisualEnhancementCard key={visual.id || `${section.heading}-enhancement-${visualIndex}`} visual={visual} />)}</div>}
           {section.real_world_example && <p className="paper-muted"><strong>Real world:</strong> {section.real_world_example}</p>}
-        </section>
-      ))}
+        </section>{enrichment && <OnlineEnrichment enrichment={enrichment} />}</React.Fragment>;
+      })}
       {worked.problem_statement && (
         <div className="worked-box">
           <h2 style={{ marginTop: 0 }}>Worked Example</h2>
@@ -1993,32 +2035,22 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
           <div className="source-chips">{lesson.source_refs.map((ref, i) => <span className="source-chip" key={i}>{ref.includes("web:") ? "External: " : "Source: "}{ref.replace(/^web:/, "")}</span>)}</div>
         </div>
       )}
+      {lesson.enrichment_sources?.length > 0 && <div className="source-panel external-sources" aria-label="Online enrichment sources"><strong>Sources used for online enrichment</strong><p className="paper-muted">The original lesson remains grounded in your uploads. These links support only the clearly labelled enrichment blocks.</p><div className="source-chips">{lesson.enrichment_sources.map((source, index) => <a className="source-chip" href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>{source.title}</a>)}</div></div>}
       <VerifiedCalculations calculations={lesson.verified_calculations} paper />
-      {lesson.visual_enhancements?.length > 0 && <section className="note-section stem-visuals"><h2>Interactive and verified visuals</h2><p className="paper-muted">These are supplementary enhancements resolved from structured identifiers after the written lesson was completed. The original notes remain the source of truth.</p><div className="visual-grid">{lesson.visual_enhancements.map((visual, index) => <VisualEnhancementCard key={visual.id || `${visual.kind}-${index}`} visual={visual} />)}</div></section>}
-      {lesson.supplementary_images?.length > 0 && (
+      {lesson.visual_enhancements?.some((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)) && <section className="note-section stem-visuals"><h2>Additional verified visuals</h2><p className="paper-muted">These could not be matched safely to one exact section, so they are kept separate.</p><div className="visual-grid">{lesson.visual_enhancements.filter((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)).map((visual, index) => <VisualEnhancementCard key={visual.id || `${visual.kind}-${index}`} visual={visual} />)}</div></section>}
+      {lesson.supplementary_images?.some((image) => !image.sectionHeading || !(lesson.sections || []).some((section) => section.heading === image.sectionHeading)) && (
         <div className="note-section">
-          <h2>Supplementary Figures</h2>
-          <p className="paper-muted">These figures add visual detail from the lecture notes. The written lesson above should still stand on its own.</p>
+          <h2>Additional figures from your notes</h2>
+          <p className="paper-muted">These could not be matched safely to one exact section, so they are kept separate.</p>
           <div style={{ display: "grid", gap: 18 }}>
-            {lesson.supplementary_images.map((img, i) => (
-              <figure key={`${img.page}-${i}`} style={{ margin: 0 }}>
-                <img
-                  src={`data:image/jpeg;base64,${img.imageBase64}`}
-                  alt={img.alt_text || img.caption || `Supplementary figure from page ${img.page}`}
-                  style={{ width: "100%", border: "1px solid #d8d1c5", borderRadius: 6 }}
-                />
-                <figcaption className="paper-muted" style={{ marginTop: 8 }}>
-                  <strong>Page {img.page}:</strong> {img.caption}
-                </figcaption>
-              </figure>
-            ))}
+            {lesson.supplementary_images.filter((image) => !image.sectionHeading || !(lesson.sections || []).some((section) => section.heading === image.sectionHeading)).map((image, index) => <SupplementaryFigure key={`${image.page}-${index}`} image={image} />)}
           </div>
         </div>
       )}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 28 }}>
         <button className="btn" onClick={onPractice}>Go to Practice</button>
         <button className="btn secondary" onClick={onAskNotes}>Ask about these notes</button>
-        <button className="btn secondary" onClick={onEnhanceVisuals} disabled={loading}>{lesson.visual_enhancements?.length ? "Refresh STEM visuals" : "Enhance with STEM visuals"}</button>
+        <button className="btn secondary" onClick={onEnhanceVisuals} disabled={loading}>{lesson.online_enrichments?.length || lesson.visual_enhancements?.length ? "Refresh online enrichment" : "Add online enrichment"}</button>
         <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Regenerate notes</button>
       </div>
     </div>
@@ -2974,6 +3006,10 @@ Be selective, but do include appropriate visuals. Include up to ${MAX_SUPPLEMENT
 Do not include ordinary bullet-point slides, title slides, decorative images, or screenshots whose useful content is already just text. The written lesson must stand on its own; included figures should add information or spatial/visual context, not replace explanation.
 
 For every included image, write a caption that explains why the figure matters for this lesson and how the student should read it.
+Set section_heading to one of the exact lesson section headings below so the figure appears beside the explanation it supports. Never paraphrase a heading. If no exact placement is defensible, leave section_heading empty.
+
+Exact section headings:
+${JSON.stringify((draftLesson.sections || []).map((section) => section.heading))}
 
 Lesson:
 ${JSON.stringify(draftLesson)}
@@ -2998,6 +3034,7 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
             page,
             caption: item.caption || `Supplementary figure from page ${page}`,
             alt_text: item.alt_text || image.description || item.caption || `Supplementary figure from page ${page}`,
+            sectionHeading: (draftLesson.sections || []).some((section) => section.heading === item.section_heading) ? item.section_heading : "",
             imageBase64: image.imageBase64,
             describedBy: image.modelUsed || "",
           };
@@ -3183,41 +3220,68 @@ representative_patterns must describe abstract question structures without copyi
     catch (error) { console.warn("Core technical visuals skipped", error); return []; }
   };
 
-  const buildStemVisualEnhancements = async (draftLesson, subject, topic, subtopic) => {
+  const resolveOptionalVisualRequests = async (subject, requests) => {
+    if (!requests?.length) return [];
+    try { return await resolveVisualRequests(subject, requests); }
+    catch (error) { console.warn("Optional visual resolution skipped", error); return []; }
+  };
+
+  const buildGroundedLessonEnrichment = async (draftLesson, subject, topic, subtopic) => {
     try {
-      setLoadingMsg("Identifying useful STEM visuals...");
+      setLoadingMsg("Checking the lesson for gaps and useful visuals...");
+      const sectionHeadings = (draftLesson.sections || []).map((section) => section.heading).filter(Boolean);
       const requestPrompt = `${TUTOR_VOICE_PROMPT}
 
-The source-grounded lesson below is already complete and approved. Do not rewrite, shorten, correct, or replace any of it. This is a separate visual-enhancement pass only.
+The source-grounded university lesson below is already complete and approved. This is layer 2 of note generation: an additive enrichment and visual-placement plan. Do not rewrite, shorten, silently correct, or replace the original lesson.
 
-Identify at most 8 optional visuals that materially improve understanding and can be resolved from structured identifiers. Chemical structures and circuits are already handled by the first lesson pass, so never request molecule_2d or circuit here. Return no request when prose, equations, Mermaid, or an existing source-page figure already explains the concept adequately.
+Use Google Search to find reliable information that adds depth where the uploaded material appears thin, compressed, or dependent on a diagram. This is especially useful for anatomy, chemistry, biology, spatial systems, apparatus, and mechanisms that are hard to recover from slide text. You may venture slightly beyond the uploaded notes, but only to clarify a concept already present in this exact lesson, explain missing visual relationships, add a helpful mechanism, or give concise current context. Never introduce a neighbouring module, a new examinable topic, medical advice, or unsupported certainty.
+
+Return at most 6 enrichment blocks. Each block must:
+- append after exactly one original section and use its exact heading in after_section_heading;
+- be self-contained Markdown of roughly 80-220 words, focused on genuine learning value rather than padding;
+- explain in why_needed what was underrepresented;
+- avoid claiming the external information came from the student's uploads.
+
+Also return up to 12 visual_requests for layer 3. Be reasonably liberal when a relevant visual would materially improve comprehension, but never add decoration. Every request must use section_heading copied exactly from the list below. Prefer one strong visual over several near-duplicates. Chemical structures and circuits are already handled as core notation in layer 1, so do not request molecule_2d or circuit here unless an important externally verified example is genuinely absent.
 
 Rules:
 - For experimentally determined proteins/macromolecules use structure_3d only when a specific four-character PDB ID is confidently known. Never invent an ID.
 - For biology reference imagery use reference_image with domain biology and a precise scientific-name query where possible.
 - For astronomy imagery use reference_image with domain astronomy and a precise object or mission query.
+- For physics, mathematics, chemistry apparatus, crystal structures, engineering, and other educational imagery use reference_image with the closest domain and a precise descriptive query.
 - For anatomy use anatomy with an FMA ID only when confident. It will be held for human review.
 - Medical/injury imagery must use domain medical and will be held for human review.
-- Do not request generic decorative imagery, copyrighted textbook figures, or visuals outside this module/lesson.
+- Do not request generic stock imagery, copyrighted textbook figures, logos, or visuals outside this module/lesson.
 - Structured identifiers are untrusted suggestions and will be independently checked by the resolver.
+
+${moduleBoundaryText(subject)}
 
 Module: ${subject.meta?.name}
 Topic: ${topic.name}
 Lesson: ${subtopic.name}
+Exact section headings: ${JSON.stringify(sectionHeadings)}
 Approved lesson JSON:
-${JSON.stringify({ sections: draftLesson.sections, worked_example: draftLesson.worked_example, summary: draftLesson.summary, source_refs: draftLesson.source_refs })}
+${JSON.stringify({ sections: draftLesson.sections, worked_example: draftLesson.worked_example, summary: draftLesson.summary, source_refs: draftLesson.source_refs, flagged_image_pages: draftLesson.flagged_image_pages, supplementary_images: (draftLesson.supplementary_images || []).map(({ page, caption, alt_text, sectionHeading }) => ({ page, caption, alt_text, sectionHeading })) })}
 
-Return only the requested JSON.`;
-      const suggestion = await callGeminiJSON({
+Search before deciding, omit weak or redundant additions, and return only valid JSON with arrays named enrichments and visual_requests.`;
+      const webResult = await callGemini({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: requestPrompt }] }],
-        generationConfig: { temperature: 0.05, responseMimeType: "application/json", responseSchema: VISUAL_ENHANCEMENT_SCHEMA },
-      }, { onStatus: setLoadingMsg, label: "STEM visual enhancement" });
-      setLoadingMsg("Verifying visual identifiers and licences...");
-      return await resolveVisualRequests(subject, suggestion.requests || []);
+        tools: [{ google_search: {} }],
+        generationConfig: { temperature: 0.18 },
+        returnCandidate: true,
+      }, { retries: 2, onStatus: setLoadingMsg });
+      let suggestion;
+      try { suggestion = safeParseJSON(webResult.text); }
+      catch {
+        suggestion = await callGeminiJSON({ apiKey: settings.geminiApiKey, contents: [{ role: "user", parts: [{ text: `Convert the following enrichment response into the requested JSON without adding or changing claims.\n\n${webResult.text}` }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: ENRICHMENT_PLAN_SCHEMA } }, { onStatus: setLoadingMsg, label: "enrichment format repair" });
+      }
+      const validated = validateEnrichmentPlan(suggestion, sectionHeadings);
+      const enrichment_sources = extractWebSources(webResult.groundingMetadata);
+      return { ...validated, enrichments: enrichment_sources.length ? validated.enrichments : [], enrichment_sources };
     } catch (error) {
-      console.warn("STEM visual enhancement skipped", error);
-      return [];
+      console.warn("Online lesson enrichment skipped", error);
+      return { enrichments: [], visual_requests: [], enrichment_sources: [] };
     }
   };
 
@@ -3313,8 +3377,10 @@ Before returning, silently self-check every equation, claim, and worked-example 
       finalLesson.circuits = [...(finalLesson.circuits || []), ...recognizedCoreVisuals.circuits];
       const technical_visuals = await resolveCoreTechnicalVisuals(finalLesson, subject);
       const supplementary_images = await buildSupplementaryImages(finalLesson, documentContext, subtopic);
-      const visual_enhancements = await buildStemVisualEnhancements(finalLesson, subject, topic, subtopic);
-      const payload = { ...finalLesson, technical_visuals, supplementary_images, visual_enhancements, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
+      const enrichmentPlan = await buildGroundedLessonEnrichment({ ...finalLesson, supplementary_images }, subject, topic, subtopic);
+      setLoadingMsg("Resolving and verifying lesson visuals...");
+      const visual_enhancements = await resolveOptionalVisualRequests(subject, enrichmentPlan.visual_requests);
+      const payload = { ...finalLesson, technical_visuals, supplementary_images, online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, visual_enhancements, enrichmentVersion: 1, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
       await saveArtifact(uid, "lesson", key, { ...payload, generatedAt: Date.now() });
       setLesson(payload);
@@ -3335,13 +3401,17 @@ Before returning, silently self-check every equation, claim, and worked-example 
     if (!selectedSubject || !active || !lesson) return;
     setLoading(true);
     try {
-      const visual_enhancements = await buildStemVisualEnhancements(lesson, selectedSubject, active.topic, active.subtopic);
-      const nextLesson = { ...lesson, visual_enhancements, visualEnhancementUpdatedAt: Date.now() };
+      const enrichmentPlan = await buildGroundedLessonEnrichment(lesson, selectedSubject, active.topic, active.subtopic);
+      setLoadingMsg("Resolving and verifying lesson visuals...");
+      const visual_enhancements = await resolveOptionalVisualRequests(selectedSubject, enrichmentPlan.visual_requests);
+      const enrichmentUpdate = { online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, visual_enhancements, enrichmentVersion: 1, visualEnhancementUpdatedAt: Date.now() };
+      const nextLesson = { ...lesson, ...enrichmentUpdate };
       const key = lessonKey(selectedSubject.id, active.subtopic.id);
-      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), { visual_enhancements, visualEnhancementUpdatedAt: serverTimestamp() }, { merge: true });
+      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), { ...enrichmentUpdate, visualEnhancementUpdatedAt: serverTimestamp() }, { merge: true });
       await saveArtifact(uid, "lesson", key, nextLesson);
       setLesson(nextLesson);
-      showToast(visual_enhancements.length ? `${visual_enhancements.length} verified visual enhancement${visual_enhancements.length === 1 ? "" : "s"} added.` : "The lesson is already clear without an additional verified visual.", "success");
+      const additions = enrichmentPlan.enrichments.length + visual_enhancements.length;
+      showToast(additions ? `${additions} relevant enrichment${additions === 1 ? "" : "s"} added beside the appropriate notes.` : "No reliable, relevant additions were needed for this lesson.", "success");
     } catch (error) {
       showToast(error.message, "error");
     } finally {

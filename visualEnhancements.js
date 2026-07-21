@@ -1,12 +1,12 @@
 const TYPES = new Set(["molecule_2d", "structure_3d", "circuit", "reference_image", "anatomy"]);
-const DOMAINS = new Set(["chemistry", "biology", "astronomy", "medical", "electrical", "anatomy", "general"]);
+const DOMAINS = new Set(["chemistry", "biology", "astronomy", "medical", "electrical", "anatomy", "physics", "math", "crystal", "general"]);
 
 const clean = (value, max = 240) => String(value || "").trim().slice(0, max);
 
 export function validateVisualRequests(value) {
   return (value?.requests || [])
     .filter((item) => item && TYPES.has(item.type))
-    .slice(0, 8)
+    .slice(0, 12)
     .map((item, index) => ({
       id: clean(item.id || `visual-${index + 1}`, 80),
       type: item.type,
