@@ -27,7 +27,7 @@ import { CONFIDENCE_LABELS, DEFAULT_CONFIDENCE, confidenceFlag, confidenceInsigh
 import { buildModuleExamScope, moduleBoundaryText } from "./examScope";
 import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTopic } from "./curriculumEditor";
 import { buildGradeSummary } from "./gradebook";
-import { PRACTICE_TYPE_OPTIONS, groupQuestionBank, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
+import { PRACTICE_TYPE_OPTIONS, groupQuestionBank, mergeStoredQuestionBanks, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak, restorePracticeSession } from "./practiceEngine";
 import { normalizeStudyStreak, recordStudyDay } from "./streak";
 import { describeAiFailure, mergeAiUsage } from "./aiUsage";
 import { effectiveLearningMinutes } from "./timeEstimates";
@@ -3539,6 +3539,40 @@ Search before deciding, omit weak or redundant additions, and return only valid 
     showToast("Module organisation saved. Lessons, progress, and source links were preserved.", "success");
   };
 
+  const loadQuestionBank = async (key) => {
+    let localBank = [];
+    try {
+      localBank = await getArtifact(uid, "questionBank", key) || [];
+    } catch {
+      localBank = [];
+    }
+    if (!hasFirebase || !db) return localBank;
+    try {
+      const bankSnapshot = await getDoc(doc(db, "users", uid, "questionBanks", key));
+      const remoteBank = bankSnapshot.exists() ? bankSnapshot.data().questions || [] : [];
+      const mergedBank = mergeStoredQuestionBanks(remoteBank, localBank);
+      if (mergedBank.length) {
+        try {
+          await saveArtifact(uid, "questionBank", key, mergedBank);
+        } catch {
+          // Firestore data is still usable when browser storage is unavailable.
+        }
+      }
+      return mergedBank;
+    } catch {
+      return localBank;
+    }
+  };
+
+  const persistQuestionBank = async (key, bank) => {
+    const writes = [saveArtifact(uid, "questionBank", key, bank)];
+    if (hasFirebase && db) writes.push(setDoc(doc(db, "users", uid, "questionBanks", key), { questions: bank }, { merge: true }));
+    const results = await Promise.allSettled(writes);
+    if (results.every((result) => result.status === "rejected")) {
+      throw results[0].reason || new Error("Could not save the question bank.");
+    }
+  };
+
   const generateLesson = async (subject, topic, subtopic, force = false) => {
     setLoading(true);
     setLoadingMsg(force ? "Regenerating your lesson..." : "Checking saved notes...");
@@ -3548,17 +3582,7 @@ Search before deciding, omit weak or redundant additions, and return only valid 
         const cached = hasFirebase && db ? await getDoc(doc(db, "users", uid, "lessons", key)) : null;
         const cachedLesson = cached?.exists() ? cached.data() : await getArtifact(uid, "lesson", key);
         if (cachedLesson) {
-          let savedBank = [];
-          try {
-            if (hasFirebase && db) {
-              const bankSnapshot = await getDoc(doc(db, "users", uid, "questionBanks", key));
-              savedBank = bankSnapshot.exists() ? bankSnapshot.data().questions || [] : [];
-            } else {
-              savedBank = await getArtifact(uid, "questionBank", key) || [];
-            }
-          } catch {
-            savedBank = [];
-          }
+          const savedBank = await loadQuestionBank(key);
           setLesson(cachedLesson);
           setActive({ topic, subtopic });
           setQuestionBank(savedBank);
@@ -3659,26 +3683,42 @@ Before returning, silently self-check every equation, claim, and worked-example 
     if (!selectedSubject || !active || !lesson) return;
     setViewingBankQuestion(null);
     setShowNotesPeek(false);
+    const key = lessonKey(selectedSubject.id, active.subtopic.id);
+    const persistedBank = await loadQuestionBank(key);
+    const storedBank = persistedBank.length ? persistedBank : questionBank;
+    const restored = restorePracticeSession(storedBank, {
+      subjectId: selectedSubject.id,
+      lessonId: active.subtopic.id,
+      currentQuestionId: lesson.question?.id,
+    });
     const activeSession = practiceConfig?.subjectId === selectedSubject.id
       && practiceConfig?.lessonId === active.subtopic.id
       && practiceConfig?.sessionId;
-    if (!activeSession) {
+    const sessionConfig = activeSession ? practiceConfig : restored?.config;
+    if (!sessionConfig) {
+      setQuestionBank(storedBank);
       setPhase("practiceSetup");
       return;
     }
-    const current = lesson.question?.practiceSessionId === practiceConfig.sessionId
-      ? questionBank.find((question) => question.id === lesson.question.id) || lesson.question
+    const normalizedBank = restored?.bank || storedBank;
+    setQuestionBank(normalizedBank);
+    setPracticeConfig(sessionConfig);
+    if (restored?.migrated) await persistQuestionBank(key, normalizedBank);
+    const current = lesson.question?.practiceSessionId === sessionConfig.sessionId
+      ? normalizedBank.find((question) => question.id === lesson.question.id && !question.attempts?.length)
       : null;
-    if (!current) {
-      await fetchQuestion();
+    const nextQuestion = current || (activeSession
+      ? questionsForPracticeSession(normalizedBank, sessionConfig).find((question) => !question.attempts?.length)
+      : restored?.question);
+    if (!nextQuestion) {
+      await fetchQuestion(sessionConfig);
       return;
     }
-    const attempt = current.attempts?.[0] || null;
-    setLesson((previous) => ({ ...previous, question: current }));
-    setStudentAnswer(attempt?.studentAnswer || "");
-    setSelectedOption(attempt?.selectedOption || null);
-    setFeedback(attempt);
-    setAnswerConfidence(attempt?.confidence || DEFAULT_CONFIDENCE);
+    setLesson((previous) => ({ ...previous, question: nextQuestion }));
+    setStudentAnswer("");
+    setSelectedOption(null);
+    setFeedback(null);
+    setAnswerConfidence(DEFAULT_CONFIDENCE);
     setPhase("question");
   };
 
@@ -3690,11 +3730,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
     setViewingBankQuestion(null);
     try {
       const key = lessonKey(selectedSubject.id, active.subtopic.id);
-      let bank = [];
-      if (hasFirebase && db) {
-        const bankSnap = await getDoc(doc(db, "users", uid, "questionBanks", key));
-        bank = bankSnap.exists() ? bankSnap.data().questions || [] : [];
-      } else bank = await getArtifact(uid, "questionBank", key) || [];
+      const bank = await loadQuestionBank(key);
       setQuestionBank(bank);
       let activeConfig = requestedConfig?.newSession
         ? {
@@ -3704,7 +3740,9 @@ Before returning, silently self-check every equation, claim, and worked-example 
             types: normalizePracticeTypes(requestedConfig.types),
             stage: "short",
           }
-        : practiceConfig;
+        : requestedConfig?.sessionId
+          ? requestedConfig
+          : practiceConfig;
       if (!activeConfig.sessionId || activeConfig.subjectId !== selectedSubject.id || activeConfig.lessonId !== active.subtopic.id) {
         setPhase("practiceSetup");
         setLoading(false);
@@ -3811,8 +3849,7 @@ Return exactly ${batchSize} questions under a "questions" array, in the requeste
       }
       if (!newQuestions.length) throw new Error("The AI didn't return any questions. Try again.");
       const nextBank = [...bank, ...newQuestions];
-      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "questionBanks", key), { questions: nextBank }, { merge: true });
-      await saveArtifact(uid, "questionBank", key, nextBank);
+      await persistQuestionBank(key, nextBank);
       setQuestionBank(nextBank);
       setLesson((prev) => ({ ...prev, question: newQuestions[0] }));
       setStudentAnswer("");
@@ -4110,19 +4147,11 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
       parsed.confidence_insight = confidenceInsight(parsed);
       const attempt = { ...parsed, studentAnswer, selectedOption, gradedAt: Date.now() };
       const key = lessonKey(selectedSubject.id, active.subtopic.id);
-      if (hasFirebase && db) {
-        const bankSnap = await getDoc(doc(db, "users", uid, "questionBanks", key));
-        const bank = bankSnap.exists() ? bankSnap.data().questions || [] : [q];
-        const nextBank = bank.map((question) => question.id === q.id ? appendAttempt(question, attempt) : question);
-        await setDoc(doc(db, "users", uid, "questionBanks", key), { questions: nextBank }, { merge: true });
-        setQuestionBank(nextBank);
-        await saveArtifact(uid, "questionBank", key, nextBank);
-      } else {
-        const bank = await getArtifact(uid, "questionBank", key) || [q];
-        const nextBank = bank.map((question) => question.id === q.id ? appendAttempt(question, attempt) : question);
-        await saveArtifact(uid, "questionBank", key, nextBank);
-        setQuestionBank(nextBank);
-      }
+      const bank = await loadQuestionBank(key);
+      const sourceBank = bank.some((question) => question.id === q.id) ? bank : [...bank, q];
+      const nextBank = sourceBank.map((question) => question.id === q.id ? appendAttempt(question, attempt) : question);
+      await persistQuestionBank(key, nextBank);
+      setQuestionBank(nextBank);
       setFeedback(parsed);
       setLesson((prev) => ({ ...prev, question: appendAttempt(q, attempt) }));
       await updateMastery(parsed);

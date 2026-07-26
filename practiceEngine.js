@@ -67,6 +67,77 @@ export function questionsForPracticeSession(bank = [], config = {}) {
   ));
 }
 
+function questionUpdatedAt(question = {}) {
+  return Math.max(
+    Number(question.createdAt || 0),
+    ...(question.attempts || []).map((attempt) => Number(attempt.gradedAt || 0)),
+  );
+}
+
+export function mergeStoredQuestionBanks(remoteBank = [], localBank = []) {
+  const merged = new Map();
+  [...remoteBank, ...localBank].forEach((question) => {
+    if (!question?.id) return;
+    const current = merged.get(question.id);
+    if (
+      !current
+      || (question.attempts?.length || 0) > (current.attempts?.length || 0)
+      || (
+        (question.attempts?.length || 0) === (current.attempts?.length || 0)
+        && questionUpdatedAt(question) > questionUpdatedAt(current)
+      )
+    ) merged.set(question.id, question);
+  });
+  return [...merged.values()].sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+}
+
+export function restorePracticeSession(bank = [], { subjectId = null, lessonId = null, currentQuestionId = null } = {}) {
+  if (!bank.length) return null;
+  const legacySessionId = `legacy:${subjectId || "module"}:${lessonId || "lesson"}`;
+  let migrated = false;
+  const normalizedBank = bank.map((question) => {
+    if (question.practiceSessionId) return question;
+    migrated = true;
+    return {
+      ...question,
+      practiceSessionId: legacySessionId,
+      practiceStage: question.practiceStage || (["derivation", "long_answer"].includes(question.type) ? "hard" : "short"),
+      practiceSelection: normalizePracticeTypes(question.practiceSelection || ["all"]),
+    };
+  });
+  const sessions = new Map();
+  normalizedBank.forEach((question) => {
+    const questions = sessions.get(question.practiceSessionId) || [];
+    questions.push(question);
+    sessions.set(question.practiceSessionId, questions);
+  });
+  const candidates = [...sessions.entries()]
+    .map(([sessionId, questions]) => ({
+      sessionId,
+      questions: [...questions].sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0)),
+      updatedAt: Math.max(...questions.map(questionUpdatedAt)),
+      hasUnattempted: questions.some((question) => !question.attempts?.length),
+    }))
+    .sort((a, b) => a.updatedAt - b.updatedAt);
+  const selected = [...candidates].reverse().find((session) => session.hasUnattempted) || candidates.at(-1);
+  if (!selected) return null;
+  const remembered = selected.questions.find((question) => question.id === currentQuestionId && !question.attempts?.length);
+  const question = remembered || selected.questions.find((item) => !item.attempts?.length) || null;
+  const latestQuestion = selected.questions.at(-1);
+  return {
+    bank: normalizedBank,
+    migrated,
+    question,
+    config: {
+      subjectId,
+      lessonId,
+      sessionId: selected.sessionId,
+      types: normalizePracticeTypes(question?.practiceSelection || latestQuestion?.practiceSelection || ["all"]),
+      stage: question?.practiceStage || latestQuestion?.practiceStage || "short",
+    },
+  };
+}
+
 export function groupQuestionBank(bank = [], currentQuestionId = null) {
   const ordered = [...bank].sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
   return {

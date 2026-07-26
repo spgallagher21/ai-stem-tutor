@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupQuestionBank, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
+import { groupQuestionBank, mergeStoredQuestionBanks, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak, restorePracticeSession } from "./practiceEngine";
 
 describe("practice session planning", () => {
   it("uses lesson breadth and difficulty to size the session", () => {
@@ -41,5 +41,28 @@ describe("practice session planning", () => {
     expect(groups.current.map((question) => question.id)).toEqual(["current"]);
     expect(groups.upcoming.map((question) => question.id)).toEqual(["upcoming"]);
     expect(groups.answered.map((question) => question.id)).toEqual(["answered"]);
+  });
+  it("restores the newest session that still has unanswered questions", () => {
+    const bank = [
+      { id: "older-unseen", createdAt: 1, attempts: [], practiceSessionId: "older", practiceStage: "short", practiceSelection: ["multiple_choice"] },
+      { id: "current-done", createdAt: 2, attempts: [{ gradedAt: 3 }], practiceSessionId: "current", practiceStage: "short", practiceSelection: ["short_explain"] },
+      { id: "current-next", createdAt: 4, attempts: [], practiceSessionId: "current", practiceStage: "short", practiceSelection: ["short_explain"] },
+    ];
+    const restored = restorePracticeSession(bank, { subjectId: "module", lessonId: "lesson" });
+    expect(restored.question.id).toBe("current-next");
+    expect(restored.config).toMatchObject({ subjectId: "module", lessonId: "lesson", sessionId: "current", types: ["short_explain"], stage: "short" });
+  });
+  it("migrates older saved questions into a recoverable practice session", () => {
+    const restored = restorePracticeSession([{ id: "legacy", type: "multiple_choice", createdAt: 1, attempts: [] }], { subjectId: "module", lessonId: "lesson" });
+    expect(restored.migrated).toBe(true);
+    expect(restored.question.practiceSessionId).toBe("legacy:module:lesson");
+    expect(restored.config.sessionId).toBe("legacy:module:lesson");
+  });
+  it("keeps the newest attempted question when local and remote storage differ", () => {
+    const remote = [{ id: "q1", createdAt: 1, attempts: [] }, { id: "remote-only", createdAt: 2, attempts: [] }];
+    const local = [{ id: "q1", createdAt: 1, attempts: [{ gradedAt: 3, correct: true }] }];
+    const merged = mergeStoredQuestionBanks(remote, local);
+    expect(merged.find((question) => question.id === "q1").attempts).toHaveLength(1);
+    expect(merged.map((question) => question.id)).toEqual(["q1", "remote-only"]);
   });
 });
