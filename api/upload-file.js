@@ -41,8 +41,8 @@ export default async function handler(req, res) {
     }, 45_000);
 
     if (!start.ok) {
-      const details = await start.text();
-      return res.status(start.status).json({ error: details || "Could not start Gemini file upload." });
+      await start.text();
+      return res.status(start.status).json({ error: "Could not start Gemini file upload." });
     }
 
     const uploadUrl = start.headers.get("x-goog-upload-url");
@@ -59,7 +59,9 @@ export default async function handler(req, res) {
       body: bytes,
     }, 60_000);
 
-    const payload = await finish.json();
+    const responseText = await finish.text();
+    let payload = {};
+    try { payload = JSON.parse(responseText); } catch { /* provider returned no structured error */ }
     if (!finish.ok) {
       return res.status(finish.status).json({ error: payload?.error?.message || "Gemini file upload failed." });
     }

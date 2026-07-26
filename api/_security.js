@@ -2,6 +2,7 @@ import { decodeProtectedHeader, importX509, jwtVerify } from "jose";
 
 const buckets = globalThis.__studyLoopRateBuckets || new Map();
 globalThis.__studyLoopRateBuckets = buckets;
+const MAX_RATE_BUCKETS = 10_000;
 
 let firebaseCerts = { expiresAt: 0, values: {} };
 
@@ -24,7 +25,13 @@ async function verifyFirebaseToken(token) {
 }
 
 function clientIp(req) {
-  return String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
+  return String(req.headers["x-vercel-forwarded-for"] || req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
+}
+
+export function authenticationMode(env = process.env) {
+  if (env.FIREBASE_PROJECT_ID) return "firebase";
+  if (env.ALLOW_LOCAL_UNAUTHENTICATED === "true" && env.VERCEL_ENV !== "production" && env.NODE_ENV !== "production") return "local";
+  return "misconfigured";
 }
 
 export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, maxBodyBytes = 20 * 1024 * 1024 } = {}) {
@@ -35,8 +42,12 @@ export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, m
   }
 
   let uid = "local";
-  const firebaseConfigured = Boolean(process.env.FIREBASE_PROJECT_ID);
-  if (firebaseConfigured) {
+  const authMode = authenticationMode();
+  if (authMode === "misconfigured") {
+    res.status(503).json({ error: "Tutor authentication is not configured." });
+    return null;
+  }
+  if (authMode === "firebase") {
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
     if (!token) {
       res.status(401).json({ error: "Sign in before using the tutor." });
@@ -61,6 +72,13 @@ export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, m
   }
   bucket.push(now);
   buckets.set(key, bucket);
+  if (buckets.size > MAX_RATE_BUCKETS) {
+    for (const [bucketKey, timestamps] of buckets) {
+      if (!timestamps.some((timestamp) => timestamp > now - windowMs)) buckets.delete(bucketKey);
+      if (buckets.size <= MAX_RATE_BUCKETS) break;
+    }
+    while (buckets.size > MAX_RATE_BUCKETS) buckets.delete(buckets.keys().next().value);
+  }
   return { uid };
 }
 

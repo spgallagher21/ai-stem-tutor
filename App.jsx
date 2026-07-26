@@ -17,10 +17,12 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
+import DOMPurify from "dompurify";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "katex/dist/katex.min.css";
 import { AuthProvider, getSettings, saveSettings, useAuth } from "./AuthContext";
 import { auth, db, firebaseReady } from "./firebase";
-import { clearLocalPdfs, deleteLocalPdfsByPrefix, getLocalPdf, saveLocalPdf } from "./localPdfStore";
+import { deleteLocalPdfsByPrefix, getLocalPdf, saveLocalPdf } from "./localPdfStore";
 import { deleteArtifacts, exportLearningData, getArtifact, listArtifacts, saveArtifact } from "./studyStore";
 import { buildDeadlinePlan, buildStudySession, dueSubtopics, scheduleReview } from "./studyEngine";
 import { CONFIDENCE_LABELS, DEFAULT_CONFIDENCE, confidenceFlag, confidenceInsight, normalizeConfidence } from "./confidence";
@@ -31,7 +33,7 @@ import { PRACTICE_TYPE_OPTIONS, groupQuestionBank, mergeStoredQuestionBanks, nor
 import { normalizeStudyStreak, recordStudyDay } from "./streak";
 import { describeAiFailure, mergeAiUsage } from "./aiUsage";
 import { effectiveLearningMinutes } from "./timeEstimates";
-import { clampTimerMinutes, minutesToSeconds } from "./timer";
+import { clampTimerMinutes, createDeadline, minutesToSeconds, secondsUntil } from "./timer";
 import { normalizeMathMarkdown, placeLessonCalculations } from "./noteMath";
 import { extractWebSources, notesChatScopeKey } from "./webGrounding";
 import { validateVisualRequests, visualCacheKey } from "./visualEnhancements";
@@ -40,6 +42,7 @@ import { buildGraphQuestion, normalizeGraphDefinition, sampleGraph } from "./gra
 import { verifyVisualQuestionAgainstAssets } from "./visualQuestions";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
 import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
+import { fitQuestionsForCloud } from "./cloudPersistence";
 import {
   MAX_INLINE_DOCUMENT_BYTES,
   arrayBufferToBase64,
@@ -1137,6 +1140,7 @@ useEffect(() => {
       await waitForGlobal("mermaid");
       window.mermaid.initialize({
         startOnLoad: false,
+        securityLevel: "strict",
         theme: "base",
         themeVariables: paper
           ? { background: "#fdfbf7", primaryColor: "#dbeafe", primaryTextColor: "#1a1a1a", lineColor: "#6b6459", tertiaryColor: "#f7f2e9" }
@@ -1156,7 +1160,7 @@ useEffect(() => {
 }, [chart, id, paper]);
 
   if (error || !chart) return null;
-  return <div style={{ margin: "22px 0", overflowX: "auto" }} dangerouslySetInnerHTML={{ __html: svg }} />;
+  return <div style={{ margin: "22px 0", overflowX: "auto" }} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }) }} />;
 };
 
 function ThemePreviewCard({ theme, selected, onSelect }) {
@@ -1686,7 +1690,7 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
             <button className="btn ghost" onClick={() => onOpenSubject(subject)} style={{ width: "100%", textAlign: "left", padding: 0, minHeight: "auto", color: "var(--text)" }}>
               <h3 className="heading" style={{ margin: "8px 0" }}>{subject.meta?.name || "Untitled module"}</h3>
               {(subject.meta?.courseCode || subject.meta?.semester) && <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>{[subject.meta.courseCode, subject.meta.semester].filter(Boolean).join(" • ")}</div>}
-              <div className="progress-bar"><span style={{ width: `${progress}%` }} /></div>
+              <div className="progress-bar" role="progressbar" aria-label={`${subject.meta?.name || "Module"} completion`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div>
               <div className="muted mono" style={{ fontSize: 13, marginTop: 10 }}>{progress}% complete - {remaining} min left</div>
               <div className="muted" style={{ fontSize: 13, marginTop: 8 }}>{subject.meta?.curriculum?.topics?.length || 0} topic{subject.meta?.curriculum?.topics?.length === 1 ? "" : "s"}</div>
               {(confidentMisconceptions > 0 || uncertainAnswers > 0) && <div style={{ fontSize: 13, marginTop: 8, color: confidentMisconceptions ? "var(--warning)" : "var(--muted)" }}>{confidentMisconceptions > 0 ? `${confidentMisconceptions} confident misconception${confidentMisconceptions === 1 ? "" : "s"} prioritised` : `${uncertainAnswers} correct-but-uncertain lesson${uncertainAnswers === 1 ? "" : "s"}`}</div>}
@@ -1696,7 +1700,7 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
               <button className="btn ghost" onClick={() => onDeleteSubject(subject)} style={{ flex: 1 }}>Delete</button>
             </div>
             {modules.length > 0 && (
-              <select className="input" value={subject.meta?.moduleId || ""} onChange={(e) => onMoveSubject(subject.id, e.target.value || null)} style={{ marginTop: 10 }}>
+              <select className="input" aria-label={`Group ${subject.meta?.name || "module"}`} value={subject.meta?.moduleId || ""} onChange={(e) => onMoveSubject(subject.id, e.target.value || null)} style={{ marginTop: 10 }}>
                 <option value="">Ungrouped</option>
                 {modules.map((module) => <option key={module.id} value={module.id}>{module.name}</option>)}
               </select>
@@ -2414,15 +2418,36 @@ function TopicExamView({
 }) {
   const attempted = (exam?.questions || []).filter((q) => q.attempts?.length).length;
   const q = activeQuestion;
-  const [timed, setTimed] = useState(false);
+  const timerKey = `studyloop-exam-deadline:${subject.id}:${topic.id}`;
+  const restoredDeadline = Number(sessionStorage.getItem(timerKey) || 0);
+  const [deadlineAt, setDeadlineAt] = useState(restoredDeadline > Date.now() ? restoredDeadline : 0);
+  const [timed, setTimed] = useState(restoredDeadline > Date.now());
   const [examSubmitted, setExamSubmitted] = useState(false);
-  const [secondsLeft, setSecondsLeft] = useState(45 * 60);
+  const [secondsLeft, setSecondsLeft] = useState(() => restoredDeadline > Date.now() ? secondsUntil(restoredDeadline) : 45 * 60);
   useEffect(() => {
-    if (!timed || examSubmitted || secondsLeft <= 0) return undefined;
-    const timer = setInterval(() => setSecondsLeft((value) => value - 1), 1000);
+    if (!timed || examSubmitted || !deadlineAt) return undefined;
+    const update = () => setSecondsLeft(secondsUntil(deadlineAt));
+    update();
+    const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
-  }, [timed, examSubmitted, secondsLeft]);
-  useEffect(() => { if (timed && secondsLeft <= 0) setExamSubmitted(true); }, [timed, secondsLeft]);
+  }, [timed, examSubmitted, deadlineAt]);
+  useEffect(() => {
+    if (timed && secondsLeft <= 0) {
+      setExamSubmitted(true);
+      sessionStorage.removeItem(timerKey);
+    }
+  }, [timed, secondsLeft, timerKey]);
+  const startTimedExam = () => {
+    const deadline = createDeadline(45 * 60);
+    sessionStorage.setItem(timerKey, String(deadline));
+    setDeadlineAt(deadline);
+    setSecondsLeft(secondsUntil(deadline));
+    setTimed(true);
+  };
+  const finishTimedExam = () => {
+    sessionStorage.removeItem(timerKey);
+    setExamSubmitted(true);
+  };
   return (
     <div className="app-shell">
       <div className="container">
@@ -2433,7 +2458,7 @@ function TopicExamView({
             <p className="muted" style={{ margin: 0 }}>{subject.meta?.name} - {attempted}/{exam?.questions?.length || 0} attempted</p>
           </div>
           <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Refresh exam</button>
-          {!timed ? <button className="btn" onClick={() => setTimed(true)}>Start 45-minute exam</button> : <span className="mono" role="timer">{Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}</span>}
+          {!timed ? <button className="btn" onClick={startTimedExam}>Start 45-minute exam</button> : <span className="mono" role="timer" aria-label={`${Math.ceil(secondsLeft / 60)} minutes remaining`}>{Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}</span>}
         </header>
 
         <div className="grid topic-exam-grid" style={{ gridTemplateColumns: "minmax(220px, 300px) minmax(0, 1fr)", alignItems: "start" }}>
@@ -2450,7 +2475,7 @@ function TopicExamView({
                     style={{ justifyContent: "space-between", textAlign: "left" }}
                   >
                     <span>Q{index + 1}</span>
-                    <span className="mono">{attemptedQuestion ? `${question.attempts[0].partial_credit_percent}%` : QUESTION_TYPE_LABELS[question.type] || question.type}</span>
+                    <span className="mono">{attemptedQuestion ? (timed && !examSubmitted ? "Answered" : `${question.attempts[0].partial_credit_percent}%`) : QUESTION_TYPE_LABELS[question.type] || question.type}</span>
                   </button>
                 );
               })}
@@ -2467,7 +2492,7 @@ function TopicExamView({
               {q.type === "multiple_choice" ? (
                 <div className="grid">
                   {(q.options || []).map((opt) => (
-                    <button key={opt} className="btn secondary" disabled={!!feedback} onClick={() => setSelectedOption(opt)} style={{ textAlign: "left", borderColor: selectedOption === opt ? "var(--accent-1)" : "var(--border)" }}>
+                    <button key={opt} className="btn secondary" aria-pressed={selectedOption === opt} disabled={!!feedback} onClick={() => setSelectedOption(opt)} style={{ textAlign: "left", borderColor: selectedOption === opt ? "var(--accent-1)" : "var(--border)" }}>
                       <MathRenderer text={opt} />
                     </button>
                   ))}
@@ -2496,14 +2521,14 @@ function TopicExamView({
             </div>
           )}
         </div>
-        {timed && !examSubmitted && <button className="btn" onClick={() => setExamSubmitted(true)} style={{ marginTop: 18 }}>Finish exam and reveal feedback</button>}
+        {timed && !examSubmitted && <button className="btn" onClick={finishTimedExam} style={{ marginTop: 18 }}>Finish exam and reveal feedback</button>}
       </div>
     </div>
   );
 }
 
 function StemTutor() {
-  const { uid, authLoading, firebaseReady: hasFirebase } = useAuth();
+  const { uid, authLoading, authError, firebaseReady: hasFirebase } = useAuth();
   const { toasts, showToast, removeToast } = useToasts();
   const [settings, setSettings] = useState({ onboarded: false, geminiApiKey: "", theme: "aurora-dark", studyContext: "", referralSource: "", tutorialSeen: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -2567,25 +2592,19 @@ function StemTutor() {
   }, [uid]);
 
   useEffect(() => {
-    // Only pdf.js and Mermaid load from a CDN now; math/markdown rendering is bundled (see MathRenderer).
-    const scripts = [
-      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
-      "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js",
-    ];
-    scripts.forEach((src) => {
-      if (document.querySelector(`script[src="${src}"]`)) return;
-      const script = document.createElement("script");
-      script.src = src;
-      script.async = false;
-      document.head.appendChild(script);
-    });
-    const timer = setInterval(() => {
-      if (window.pdfjsLib) {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-        clearInterval(timer);
-      }
-    }, 300);
-    return () => clearInterval(timer);
+    let cancelled = false;
+    Promise.all([import("pdfjs-dist/build/pdf.mjs"), import("mermaid")])
+      .then(([pdfjs, mermaidModule]) => {
+        if (cancelled) return;
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+        window.pdfjsLib = pdfjs;
+        window.mermaid = mermaidModule.default || mermaidModule;
+      })
+      .catch((error) => {
+        console.error("StudyLoop rendering tools could not be loaded.", error);
+        showToast("PDF and diagram tools could not be loaded. Refresh and try again.", "error");
+      });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -2593,8 +2612,10 @@ function StemTutor() {
     getSettings(uid).then((saved) => {
       const next = saved || { onboarded: false, theme: "aurora-dark", studyContext: "", referralSource: "", tutorialSeen: false };
       const legacySessionKey = sessionStorage.getItem("stem-gemini-api-key") || "";
-      const savedApiKey = localStorage.getItem(apiKeyStorageKey(uid)) || legacySessionKey;
-      if (legacySessionKey && !localStorage.getItem(apiKeyStorageKey(uid))) localStorage.setItem(apiKeyStorageKey(uid), legacySessionKey);
+      const persistentLegacyKey = localStorage.getItem(apiKeyStorageKey(uid)) || "";
+      const savedApiKey = sessionStorage.getItem(apiKeyStorageKey(uid)) || legacySessionKey || persistentLegacyKey;
+      if (savedApiKey) sessionStorage.setItem(apiKeyStorageKey(uid), savedApiKey);
+      localStorage.removeItem(apiKeyStorageKey(uid));
       sessionStorage.removeItem("stem-gemini-api-key");
       const normalized = { studyContext: "", referralSource: "", tutorialSeen: false, tutorialAwaitingModule: false, studyMode: "deep", sessionMinutes: 30, gpaScale: 4.2, ...next, geminiApiKey: savedApiKey, theme: normalizeThemeId(next.theme) };
       setSettings(normalized);
@@ -2707,8 +2728,8 @@ function StemTutor() {
   const persistSettings = async (patch) => {
     const next = { ...settings, ...patch };
     setSettings(next);
-    if (next.geminiApiKey) localStorage.setItem(apiKeyStorageKey(uid), next.geminiApiKey);
-    else localStorage.removeItem(apiKeyStorageKey(uid));
+    if (next.geminiApiKey) sessionStorage.setItem(apiKeyStorageKey(uid), next.geminiApiKey);
+    else sessionStorage.removeItem(apiKeyStorageKey(uid));
     await saveSettings(uid, next);
   };
 
@@ -3566,7 +3587,7 @@ Search before deciding, omit weak or redundant additions, and return only valid 
 
   const persistQuestionBank = async (key, bank) => {
     const writes = [saveArtifact(uid, "questionBank", key, bank)];
-    if (hasFirebase && db) writes.push(setDoc(doc(db, "users", uid, "questionBanks", key), { questions: bank }, { merge: true }));
+    if (hasFirebase && db) writes.push(setDoc(doc(db, "users", uid, "questionBanks", key), { questions: fitQuestionsForCloud(bank) }, { merge: true }));
     const results = await Promise.allSettled(writes);
     if (results.every((result) => result.status === "rejected")) {
       throw results[0].reason || new Error("Could not save the question bank.");
@@ -4042,7 +4063,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
       const nextQuestions = (topicExam?.questions || []).map((question) => question.id === q.id ? appendAttempt(question, attempt) : question);
       const nextExam = { ...topicExam, questions: nextQuestions };
       if (hasFirebase && db) {
-        await setDoc(doc(db, "users", uid, "topicExams", topicExamKey(selectedSubject.id, activeTopicExam.id)), { questions: nextQuestions }, { merge: true });
+        await setDoc(doc(db, "users", uid, "topicExams", topicExamKey(selectedSubject.id, activeTopicExam.id)), { questions: fitQuestionsForCloud(nextQuestions) }, { merge: true });
       }
       await saveArtifact(uid, "topicExam", topicExamKey(selectedSubject.id, activeTopicExam.id), nextExam);
       setTopicExam(nextExam);
@@ -4258,9 +4279,10 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
     localStorage.removeItem("stem-modules");
     localStorage.removeItem("stem-settings");
     localStorage.removeItem(apiKeyStorageKey(uid));
+    sessionStorage.removeItem(apiKeyStorageKey(uid));
     sessionStorage.removeItem("stem-gemini-api-key");
     await deleteArtifacts(uid);
-    await clearLocalPdfs();
+    await deleteLocalPdfsByPrefix(`${uid}:`);
     setSubjects([]);
     setModules([]);
     setAssessments([]);
@@ -4286,6 +4308,10 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
     }
   };
 
+  if (authError) {
+    return <main className="app-shell"><div className="container card" role="alert" style={{ padding: 24 }}><h1 className="heading">StudyLoop could not sign you in</h1><p>{authError}</p><button className="btn" onClick={() => window.location.reload()}>Try again</button></div></main>;
+  }
+
   if (authLoading || !settingsLoaded) {
     return (
       <div className="app-shell">
@@ -4304,7 +4330,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
 
   return (
     <>
-      <div className="toast-wrap">
+      <div className="toast-wrap" role="status" aria-live="polite" aria-atomic="false">
         {toasts.map((toast) => (
           <button key={toast.id} className={`toast ${toast.variant}`} onClick={() => removeToast(toast.id)}>{toast.message}</button>
         ))}
