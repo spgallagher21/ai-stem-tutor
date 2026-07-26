@@ -43,6 +43,7 @@ import { verifyVisualQuestionAgainstAssets } from "./visualQuestions";
 import { validateCurriculum, validateGrading, validateLesson, validateNotesAnswer, validateQuestion } from "./validation";
 import { assertQuestionCalculation, extractLastNumericValue, numericAnswersMatch, verifyCalculationRequests } from "./mathEngine";
 import { fitQuestionsForCloud } from "./cloudPersistence";
+import { TUTORIAL_STEPS, tutorialScreenForStep, tutorialStepFor } from "./tutorial";
 import {
   MAX_INLINE_DOCUMENT_BYTES,
   arrayBufferToBase64,
@@ -1359,9 +1360,9 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
 
         {step === "tutorial" && (
           <>
-            <h1 className="heading" style={{ marginTop: 0 }}>Explore every feature</h1>
-            <p className="muted">Next, a guided example module will show you uploads, generated notes, note Q&amp;A, grading, handwritten maths, confidence, progress tracking, deadlines, and custom module exams.</p>
-            <p className="muted">You can skip it at any time, and replay it later from Settings.</p>
+            <h1 className="heading" style={{ marginTop: 0 }}>Take a quick tour</h1>
+            <p className="muted">Next, StudyLoop will highlight the real controls as you create your first module and explore the dashboard.</p>
+            <p className="muted">You will use the app itself—no sample screens. You can skip the tour at any time or replay it later from Settings.</p>
           </>
         )}
 
@@ -1521,21 +1522,6 @@ const LEGACY_TUTORIAL_STEPS = [
   { demo: "settings", title: "You are ready", body: "Your API key is saved only in this browser for this account. Settings lets you change it, adjust study mode and session length, replay this tutorial, export learning data, or delete everything." },
 ];
 
-const TUTORIAL_STEPS = [
-  { demo: "dashboard", action: "create", title: "Create your first module", body: "Start with one real university module and upload at least one lecture-note PDF. Module code, semester, and past papers are optional. The tour pauses while you create it, then continues inside your new module." },
-  { demo: "module", title: "Open a module and choose a lesson", body: "Your uploaded notes are organised into broad topic groups, topics, and class-sized lessons. Open a lesson to generate its notes; you can reorganise topic names and move lessons later without breaking saved progress." },
-  { demo: "lesson", title: "Read the generated notes", body: "Lesson notes preserve source references, equations, worked examples, and coverage checks. Numerical work is calculator-verified, while mathematical and chemical notation is rendered as LaTeX." },
-  { demo: "notes", title: "Ask your notes", body: "Use Ask your notes while reading a lesson or from the module page. Answers check uploaded PDFs first and cite file and page; web search is used only when the notes are insufficient and is clearly labelled." },
-  { demo: "practice", title: "Choose questions and practise", body: "Choose the formats you want. StudyLoop generates a content-sized set of short checks first, then a harder set. Grading gives partial credit, misconception feedback, and a Next question option." },
-  { demo: "exam", title: "Generate a module exam", body: "From the module page, choose one or more topics and build an exam. Uploaded past papers and problem sets guide wording, structure, difficulty, and marks without leaking content from another module." },
-  { demo: "deadlines", title: "Manage deadlines and grades", body: "Add assignments, tests, or exams and select their topics. The dashboard only shows deadlines that need attention now. Enter grades directly; summary grades remain hideable for privacy." },
-  { demo: "visuals", title: "Layered notes and verified visuals", body: "Notes use uploaded sources first, clearly labelled online enrichment second, and section-anchored visuals third. Chemical structures, circuits, graphs, and source-slide figures appear beside the explanation they support." },
-  { demo: "handwriting", title: "Upload handwritten maths", body: "Photograph a handwritten answer in good light. Vision transcribes it only when recognition passes reliability checks, then shows the transcription for you to verify before grading." },
-  { demo: "confidence", title: "Confidence-aware learning", body: "Rate confidence before checking. It never changes the mark: a confident error is prioritised as a possible misconception, while a correct-but-uncertain answer gets an earlier reinforcement review." },
-  { demo: "progress", title: "Progress and independent learning", body: "Two strong recalls can master a lesson, and spaced review schedules it again before it fades. If you learned a class elsewhere, mark it learned independently." },
-  { demo: "settings", title: "Streaks, focus timer and settings", body: "The dashboard records study streaks and includes a 25-minute Pomodoro timer. Settings explains each learning mode, lets you choose a 4.2 or 4.0 GPA scale, and keeps your API key saved in this browser." },
-];
-
 function TutorialMock({ demo, profile = studyAreaProfile("") }) {
   const shell = (children) => <div className="card" style={{ padding: 20, minHeight: 280, background: "var(--surface-2)" }}>{children}</div>;
   if (demo === "dashboard") return shell(<><div style={{ display: "flex", justifyContent: "space-between" }}><h3 className="heading" style={{ marginTop: 0 }}>Modules</h3><span className="btn">Create Module</span></div><div className="card" style={{ padding: 18 }}><strong>{profile.module}</strong><p className="muted">Upload lecture PDFs now; module code and semester can be left blank.</p><p style={{ color: "var(--accent-text)", marginBottom: 0 }}>The tour resumes after your module is created.</p></div></>);
@@ -1559,21 +1545,21 @@ function TutorialMock({ demo, profile = studyAreaProfile("") }) {
   return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Settings & privacy</h3><div className="card" style={{ padding: 14 }}><strong>API key</strong><p style={{ color: "var(--success)" }}>✓ Saved in this browser for your current account</p><strong>Study preferences</strong><p>Teach from scratch · 30-minute sessions</p></div><div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}><span className="btn secondary">Replay tutorial</span><span className="btn secondary">Export data</span><span className="btn ghost">Delete my data</span></div></>);
 }
 
-function TutorialOverlay({ step, onNext, onBack, onSkip, onCreateModule, studyContext }) {
+function TutorialOverlay({ step, onNext, onBack, onSkip }) {
   const current = TUTORIAL_STEPS[step] || TUTORIAL_STEPS[0];
   const isLast = step >= TUTORIAL_STEPS.length - 1;
   return (
-    <div role="dialog" aria-modal="true" aria-labelledby="tutorial-title" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 2000, overflowY: "auto", padding: 20 }}>
-      <div className="card" style={{ margin: "min(5vh, 40px) auto", padding: 24, width: "min(920px, 100%)" }}>
-        <div className="muted mono" style={{ fontSize: 12, marginBottom: 8 }}>Feature tour · {step + 1} of {TUTORIAL_STEPS.length}</div>
+    <div className="tutorial-layer" role="dialog" aria-modal="false" aria-labelledby="tutorial-title">
+      <div className="card tutorial-popover">
+        <div className="muted mono tutorial-progress">Quick tour · {step + 1} of {TUTORIAL_STEPS.length}</div>
         <h2 id="tutorial-title" className="heading" style={{ margin: "0 0 8px" }}>{current.title}</h2>
-        <p className="muted" style={{ fontSize: 16 }}>{current.body}</p>
-        <TutorialMock demo={current.demo} profile={studyAreaProfile(studyContext)} />
-        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 20 }}>
-          <button className="btn ghost" onClick={onSkip}>Skip</button>
-          <div style={{ display: "flex", gap: 10 }}>
-            {step > 0 && <button className="btn secondary" onClick={onBack}>Back</button>}
-            <button className="btn" onClick={current.action === "create" ? onCreateModule : onNext}>{current.action === "create" ? "Create my module" : isLast ? "Done" : "Next"}</button>
+        <p className="muted tutorial-copy">{current.body}</p>
+        {current.interaction && <p className="tutorial-instruction">Use the highlighted control to continue.</p>}
+        <div className="tutorial-actions">
+          <button className="btn ghost" onClick={onSkip}>Skip tour</button>
+          <div className="tutorial-actions-next">
+            {step > 0 && current.target !== "subtopicCard" && <button className="btn secondary" onClick={onBack}>Back</button>}
+            {!current.interaction && <button className="btn" onClick={onNext}>{isLast ? "Finish" : "Next"}</button>}
           </div>
         </div>
       </div>
@@ -1640,14 +1626,14 @@ function Dashboard({
             <p className="muted" style={{ margin: "6px 0 0" }}>Create one module per course, upload notes at module level, then study AI-organised topics and classes.</p>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn secondary" onClick={onManageAssessments}>Deadlines &amp; Grades</button>
-            <button className="btn secondary" onClick={onSettings}>Settings</button>
+            <button className="btn secondary" data-tour="deadlines" onClick={onManageAssessments}>Deadlines &amp; Grades</button>
+            <button className="btn secondary" data-tour="settings" onClick={onSettings}>Settings</button>
             <button className="btn" data-tour="addModule" onClick={onAddSubject}>Create Module</button>
           </div>
         </header>
         <div className="dashboard-tools">
           <section className="card streak-card"><span aria-hidden="true">🔥</span><div><strong>{studyStreak.current || 0}-day study streak</strong><small className="muted">Longest: {studyStreak.longest || 0} days · Complete a question or lesson today to continue it.</small></div></section>
-          <PomodoroTimer />
+          <div data-tour="pomodoro"><PomodoroTimer /></div>
         </div>
 
         {!isEmpty && (
@@ -1749,7 +1735,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {!reorganising ? <button className="btn secondary" onClick={() => { setDraftCurriculum(subject.meta?.curriculum); setReorganising(true); }}>Reorganise</button> : <><button className="btn ghost" onClick={() => { setDraftCurriculum(subject.meta?.curriculum); setReorganising(false); }}>Cancel</button><button className="btn" onClick={async () => { try { await onSaveCurriculum(draftCurriculum); setReorganising(false); } catch (error) { showToast(error.message, "error"); } }}>Done</button></>}
-            <button className="btn" onClick={onAskNotes}>Ask your notes</button>
+            <button className="btn" data-tour="askNotes" onClick={onAskNotes}>Ask your notes</button>
             {weakCount > 0 && <button className="btn secondary" onClick={onReviewWeak}>Review {weakCount} weak topic{weakCount > 1 ? "s" : ""}</button>}
           </div>
         </header>
@@ -1788,7 +1774,7 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
           </button>
         </section>
 
-        <details className="card module-exam-panel" style={{ padding: 20, marginBottom: 28 }}>
+        <details className="card module-exam-panel" data-tour="moduleExam" style={{ padding: 20, marginBottom: 28 }}>
           <summary><strong className="heading">Build a module exam</strong><span className="muted">Choose topics and assessment style</span></summary>
           <div className="module-exam-panel-content">
           <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -2784,18 +2770,12 @@ function StemTutor() {
     if (subjects.length) {
       setSelectedSubject(subjects[0]);
       setScreen("subject");
-      setTutorialStep(1);
+      setTutorialStep(tutorialStepFor("subtopicCard"));
     } else {
       setScreen("dashboard");
       setTutorialStep(0);
     }
     await persistSettings({ tutorialSeen: false, tutorialAwaitingModule: false });
-  };
-
-  const beginTutorialModuleCreation = async () => {
-    setTutorialStep(null);
-    setScreen("add");
-    await persistSettings({ tutorialSeen: false, tutorialAwaitingModule: true });
   };
 
   const finishTutorial = async () => {
@@ -2808,9 +2788,8 @@ function StemTutor() {
   const advanceTutorial = () => {
     const next = tutorialStep + 1;
     const target = TUTORIAL_STEPS[next]?.target;
-    if (target === "moduleName" || target === "fileUpload" || target === "examUpload" || target === "buildCurriculum") setScreen("add");
-    if (target === "subjectCard") setScreen("dashboard");
-    if (target === "subtopicCard") {
+    const nextScreen = tutorialScreenForStep(next);
+    if (nextScreen === "subject") {
       if (subjects[0]) {
         setSelectedSubject(subjects[0]);
         setScreen("subject");
@@ -2818,7 +2797,7 @@ function StemTutor() {
         showToast("Create a module first, then this step will make more sense.", "info");
         return;
       }
-    }
+    } else setScreen(nextScreen);
     if (next >= TUTORIAL_STEPS.length) {
       finishTutorial();
       return;
@@ -2826,11 +2805,22 @@ function StemTutor() {
     setTutorialStep(next);
   };
 
+  const openModuleCreation = () => {
+    if (TUTORIAL_STEPS[tutorialStep]?.target === "addModule") {
+      setScreen("add");
+      setTutorialStep(tutorialStepFor("moduleName"));
+      return;
+    }
+    navigateTo("add");
+  };
+
   const goBackTutorial = () => {
     const prev = Math.max(0, tutorialStep - 1);
-    const target = TUTORIAL_STEPS[prev]?.target;
-    if (target === "moduleName" || target === "fileUpload" || target === "examUpload" || target === "buildCurriculum") setScreen("add");
-    if (target === "addModule" || target === "subjectCard") setScreen("dashboard");
+    const previousScreen = tutorialScreenForStep(prev);
+    if (previousScreen === "subject" && subjects[0]) {
+      setSelectedSubject(subjects[0]);
+      setScreen("subject");
+    } else setScreen(previousScreen);
     setTutorialStep(prev);
   };
 
@@ -2840,7 +2830,7 @@ function StemTutor() {
       if (subjects.length) {
         setSelectedSubject((current) => current || subjects[0]);
         setScreen("subject");
-        setTutorialStep(1);
+        setTutorialStep(tutorialStepFor("subtopicCard"));
       } else {
         setScreen("dashboard");
         setTutorialStep(0);
@@ -3342,9 +3332,9 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
       }
       setSelectedSubject(subjectDoc);
       navigateTo("subject");
-      if (settings.tutorialAwaitingModule) {
+      if (settings.tutorialAwaitingModule || tutorialStep === tutorialStepFor("buildCurriculum")) {
         await persistSettings({ tutorialAwaitingModule: false, tutorialSeen: false });
-        setTutorialStep(1);
+        setTutorialStep(tutorialStepFor("subtopicCard"));
       }
       showToast("Curriculum created and saved.", "success");
     } catch (err) {
@@ -4358,7 +4348,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           <Dashboard
             subjects={subjects}
             modules={modules}
-            onAddSubject={() => navigateTo("add")}
+            onAddSubject={openModuleCreation}
             onOpenSubject={openSubject}
             onCreateModule={() => setDashboardModal({ kind: "createModule" })}
             onRenameModule={(module) => setDashboardModal({ kind: "renameModule", module })}
@@ -4378,7 +4368,11 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
       ) : screen === "assessments" ? (
         <AssessmentPlanner subjects={subjects} assessments={assessments} onBack={() => navigateBack("dashboard")} onSave={saveAssessment} onDelete={deleteAssessment} onToggleComplete={toggleAssessmentComplete} onUpdate={updateAssessment} loading={loading} gpaScale={settings.gpaScale || 4.2} onGpaScaleChange={(gpaScale) => persistSettings({ gpaScale })} studyContext={settings.studyContext} />
       ) : screen === "add" ? (
-        <AddSubject onBack={() => navigateBack("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} studyContext={settings.studyContext} />
+        <AddSubject onBack={() => navigateBack("dashboard")} onCreate={async (payload) => {
+          const completingTutorialSetup = TUTORIAL_STEPS[tutorialStep]?.target === "buildCurriculum";
+          if (completingTutorialSetup) setTutorialStep(null);
+          await buildCurriculum(payload);
+        }} loading={loading} loadingMsg={loadingMsg} showToast={showToast} studyContext={settings.studyContext} />
       ) : screen === "subject" && selectedSubject ? (
         <SubjectView
           subject={selectedSubject}
@@ -4455,8 +4449,6 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onNext={advanceTutorial}
           onBack={goBackTutorial}
           onSkip={finishTutorial}
-          onCreateModule={beginTutorialModuleCreation}
-          studyContext={settings.studyContext}
         />
       )}
 
