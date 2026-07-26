@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, recentLowScoreStreak } from "./practiceEngine";
+import { normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
 
 describe("practice session planning", () => {
   it("uses lesson breadth and difficulty to size the session", () => {
@@ -22,5 +22,13 @@ describe("practice session planning", () => {
     expect(recentLowScoreStreak(bank)).toBe(2);
   });
   it("normalises an empty selection to all", () => expect(normalizePracticeTypes([])).toEqual(["all"]));
+  it("keeps a new study session separate while retaining older questions", () => {
+    const bank = [
+      { id: "old-short", practiceSessionId: "old", practiceStage: "short" },
+      { id: "new-short", practiceSessionId: "new", practiceStage: "short" },
+      { id: "new-hard", practiceSessionId: "new", practiceStage: "hard" },
+    ];
+    expect(questionsForPracticeSession(bank, { sessionId: "new", stage: "short" }).map((question) => question.id)).toEqual(["new-short"]);
+    expect(bank).toHaveLength(3);
+  });
 });
-
