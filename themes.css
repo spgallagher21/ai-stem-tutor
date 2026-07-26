@@ -337,8 +337,67 @@ select:focus-visible {
 
 .tour-active {
   position: relative;
-  z-index: 1900;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-1) 45%, transparent), 0 18px 48px var(--shadow);
+  z-index: 2100;
+  isolation: isolate;
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--accent-1) 72%, white),
+    0 0 0 9999px rgba(4, 7, 15, 0.72),
+    0 18px 48px var(--shadow);
+}
+
+.tutorial-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2150;
+  pointer-events: none;
+}
+
+.tutorial-popover {
+  position: fixed;
+  right: clamp(14px, 3vw, 36px);
+  bottom: clamp(14px, 3vw, 36px);
+  width: min(430px, calc(100vw - 28px));
+  padding: 22px;
+  pointer-events: auto;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+}
+
+.tutorial-progress {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.tutorial-copy {
+  margin-bottom: 14px;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.tutorial-instruction {
+  margin: 0 0 14px;
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.tutorial-actions,
+.tutorial-actions-next {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.tutorial-actions {
+  justify-content: space-between;
+}
+
+@media (max-width: 600px) {
+  .tutorial-popover {
+    right: 10px;
+    bottom: 10px;
+    width: calc(100vw - 20px);
+    padding: 18px;
+  }
 }
 
 .note-paper {
