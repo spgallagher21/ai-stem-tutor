@@ -59,3 +59,10 @@ export function recentLowScoreStreak(bank = [], threshold = 60) {
   return streak;
 }
 
+export function questionsForPracticeSession(bank = [], config = {}) {
+  if (!config.sessionId) return [];
+  return bank.filter((question) => (
+    question.practiceSessionId === config.sessionId
+    && question.practiceStage === config.stage
+  ));
+}

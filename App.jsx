@@ -27,10 +27,12 @@ import { CONFIDENCE_LABELS, DEFAULT_CONFIDENCE, confidenceFlag, confidenceInsigh
 import { buildModuleExamScope, moduleBoundaryText } from "./examScope";
 import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTopic } from "./curriculumEditor";
 import { buildGradeSummary } from "./gradebook";
-import { PRACTICE_TYPE_OPTIONS, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, recentLowScoreStreak } from "./practiceEngine";
+import { PRACTICE_TYPE_OPTIONS, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
 import { normalizeStudyStreak, recordStudyDay } from "./streak";
 import { describeAiFailure, mergeAiUsage } from "./aiUsage";
 import { effectiveLearningMinutes } from "./timeEstimates";
+import { clampTimerMinutes, minutesToSeconds } from "./timer";
+import { normalizeMathMarkdown, placeLessonCalculations } from "./noteMath";
 import { extractWebSources, notesChatScopeKey } from "./webGrounding";
 import { validateVisualRequests, visualCacheKey } from "./visualEnhancements";
 import { validateEnrichmentPlan } from "./lessonEnrichment";
@@ -213,6 +215,8 @@ const CALCULATION_SCHEMA = {
     expected_unit: { type: "STRING" },
     precision: { type: "NUMBER" },
     result_context: { type: "STRING" },
+    equation_number: { type: "STRING" },
+    worked_step: { type: "NUMBER" },
   },
   required: ["label", "expression"],
 };
@@ -1096,8 +1100,8 @@ function useToasts() {
 // --- 3.1 Markdown + math rendering, replacing the old CDN/race-prone renderer ---
 const MathRenderer = ({ text, paper = false }) => (
   <div style={{ lineHeight: 1.75, color: paper ? "#1a1a1a" : "inherit" }}>
-    <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
-      {text || ""}
+    <ReactMarkdown remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]} rehypePlugins={[rehypeKatex]}>
+      {normalizeMathMarkdown(text)}
     </ReactMarkdown>
   </div>
 );
@@ -1575,7 +1579,9 @@ function TutorialOverlay({ step, onNext, onBack, onSkip, onCreateModule, studyCo
 
 function PomodoroTimer() {
   const [mode, setMode] = useState("focus");
-  const [seconds, setSeconds] = useState(25 * 60);
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [breakMinutes, setBreakMinutes] = useState(5);
+  const [seconds, setSeconds] = useState(minutesToSeconds(25));
   const [running, setRunning] = useState(false);
   useEffect(() => {
     if (!running || seconds <= 0) return undefined;
@@ -1583,8 +1589,30 @@ function PomodoroTimer() {
     return () => clearInterval(timer);
   }, [running, seconds]);
   useEffect(() => { if (seconds === 0) setRunning(false); }, [seconds]);
-  const chooseMode = (next) => { setMode(next); setSeconds(next === "focus" ? 25 * 60 : 5 * 60); setRunning(false); };
-  return <section className="pomodoro card" aria-label="Pomodoro timer"><div><span className="muted mono">{mode === "focus" ? "FOCUS" : "BREAK"}</span><strong role="timer">{String(Math.floor(seconds / 60)).padStart(2, "0")}:{String(seconds % 60).padStart(2, "0")}</strong></div><div className="pomodoro-actions"><button className="btn secondary" onClick={() => chooseMode("focus")}>25 min focus</button><button className="btn secondary" onClick={() => chooseMode("break")}>5 min break</button><button className="btn" onClick={() => setRunning((value) => !value)}>{running ? "Pause" : seconds === 0 ? "Restart" : "Start"}</button></div></section>;
+  const durationFor = (next) => next === "focus" ? focusMinutes : breakMinutes;
+  const chooseMode = (next) => {
+    setMode(next);
+    setSeconds(minutesToSeconds(durationFor(next), { max: next === "focus" ? 120 : 60 }));
+    setRunning(false);
+  };
+  const changeDuration = (nextMode, value) => {
+    const nextMinutes = clampTimerMinutes(value, { max: nextMode === "focus" ? 120 : 60 });
+    if (nextMode === "focus") setFocusMinutes(nextMinutes);
+    else setBreakMinutes(nextMinutes);
+    if (!running && mode === nextMode) setSeconds(minutesToSeconds(nextMinutes));
+  };
+  const restart = () => {
+    setSeconds(minutesToSeconds(durationFor(mode), { max: mode === "focus" ? 120 : 60 }));
+    setRunning(true);
+  };
+  return <section className="pomodoro card" aria-label="Pomodoro timer">
+    <div><span className="muted mono">{mode === "focus" ? "FOCUS" : "BREAK"}</span><strong role="timer">{String(Math.floor(seconds / 60)).padStart(2, "0")}:{String(seconds % 60).padStart(2, "0")}</strong></div>
+    <div className="pomodoro-settings">
+      <label>Focus <input className="input" type="number" min="1" max="120" value={focusMinutes} onChange={(event) => changeDuration("focus", event.target.value)} disabled={running} /> min</label>
+      <label>Break <input className="input" type="number" min="1" max="60" value={breakMinutes} onChange={(event) => changeDuration("break", event.target.value)} disabled={running} /> min</label>
+    </div>
+    <div className="pomodoro-actions"><button className="btn secondary" onClick={() => chooseMode("focus")}>{focusMinutes} min focus</button><button className="btn secondary" onClick={() => chooseMode("break")}>{breakMinutes} min break</button><button className="btn" onClick={() => seconds === 0 ? restart() : setRunning((value) => !value)}>{running ? "Pause" : seconds === 0 ? "Restart" : "Start"}</button></div>
+  </section>;
 }
 
 function Dashboard({
@@ -1857,7 +1885,7 @@ function NotesAssistant({ subject, lessonScope, messages, onBack, onAsk, onClear
   return (
     <div className="app-shell">
       <div className="container notes-assistant-shell">
-        <button className="btn ghost" onClick={onBack}>Back to module</button>
+        <button className="btn ghost" onClick={onBack}>Back</button>
         <header className="notes-assistant-header">
           <div><h1 className="heading" style={{ marginBottom: 6 }}>Ask your notes</h1><p className="muted" style={{ margin: 0 }}>{subject.meta?.name}{lessonScope?.name ? ` · ${lessonScope.name}` : ""} · uploaded notes are checked first</p></div>
           {messages.length > 0 && <button className="btn ghost" onClick={onClear}>Clear conversation</button>}
@@ -1924,7 +1952,7 @@ function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, on
   };
 
   return <div className="app-shell"><div className="container">
-    <button className="btn ghost" onClick={onBack}>Back to dashboard</button>
+    <button className="btn ghost" onClick={onBack}>Back</button>
     <header className="grades-header"><div><h1 className="heading" style={{ marginBottom: 6 }}>Deadlines &amp; Grades</h1><p className="muted">Plan upcoming work, record results when they arrive, and track weighted performance.</p></div><div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><select className="input compact-select" aria-label="GPA scale" value={gpaScale} onChange={(event) => onGpaScaleChange?.(Number(event.target.value))}><option value="4.2">4.2 GPA scale</option><option value="4">4.0 GPA scale</option></select><button className="btn secondary" onClick={() => setShowGrades((value) => !value)}>{showGrades ? "Hide grade summaries" : "Show grade summaries"}</button></div></header>
     <section className="grade-summary-grid"><div className="card grade-summary-card"><span>Overall average</span><strong>{showGrades && grades.overallAverage !== null ? `${grades.overallAverage.toFixed(1)}%` : "•••"}</strong><small>{grades.modules.length ? `${grades.modules.length} graded module${grades.modules.length === 1 ? "" : "s"}` : "No grades recorded yet"}</small></div><div className="card grade-summary-card"><span>Estimated {grades.gpaScale.toFixed(1)} GPA</span><strong>{showGrades && grades.estimatedGpa !== null ? grades.estimatedGpa.toFixed(2) : "•••"}</strong><small>Approximation from overall percentage</small></div>{grades.modules.map((item) => <div className="card grade-summary-card" key={item.subject.id}><span>{item.subject.meta?.name || "Module"}</span><strong>{showGrades ? `${item.average.toFixed(1)}%` : "•••"}</strong><small>{item.weightCompleted.toFixed(1)}% of module weight graded</small></div>)}</section>
     <p className="muted" style={{ fontSize: 12 }}>Module averages use assessments with both a grade and weighting. The overall average gives each graded module equal weight. GPA is an estimate because university conversion systems vary.</p>
@@ -2072,9 +2100,10 @@ function OnlineEnrichment({ enrichment }) {
   </aside>;
 }
 
-function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNotes, loading }) {
+function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
   const outcomes = lesson.learning_outcomes || [];
   const worked = lesson.worked_example || {};
+  const calculationPlacement = placeLessonCalculations(lesson);
   return (
     <div className="note-paper">
       {outcomes.length > 0 && (
@@ -2094,11 +2123,12 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
           {section.key_points?.length > 0 && (
             <ul>{section.key_points.map((item, i) => <li key={i}>{item}</li>)}</ul>
           )}
-          {(section.equations || []).map((eq) => (
+          {(section.equations || []).map((eq, equationIndex) => (
             <div className="equation-row" key={eq.number}>
               <div>
                 <MathRenderer text={`$$${eq.latex}$$`} paper />
                 {eq.explanation && <div className="paper-muted">{eq.explanation}</div>}
+                <VerifiedCalculations calculations={calculationPlacement.byEquation[`${idx}:${equationIndex}`]} paper />
               </div>
               <div className="equation-number">({eq.number})</div>
             </div>
@@ -2114,8 +2144,9 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
         <div className="worked-box">
           <h2 style={{ marginTop: 0 }}>Worked Example</h2>
           <MathRenderer text={worked.problem_statement} paper />
-          <ol>{(worked.steps || []).map((step, i) => <li key={i}><MathRenderer text={step} paper /></li>)}</ol>
+          <ol>{(worked.steps || []).map((step, i) => <li key={i}><MathRenderer text={step} paper /><VerifiedCalculations calculations={calculationPlacement.byWorkedStep[String(i)]} paper /></li>)}</ol>
           {worked.final_answer && <strong><MathRenderer text={worked.final_answer} paper /></strong>}
+          <VerifiedCalculations calculations={calculationPlacement.unplaced} paper />
         </div>
       )}
       {lesson.common_mistakes?.length > 0 && (
@@ -2142,7 +2173,6 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
       )}
       {lesson.enrichment_sources?.length > 0 && <div className="source-panel external-sources" aria-label="Online enrichment sources"><strong>Sources used for online enrichment</strong><p className="paper-muted">The original lesson remains grounded in your uploads. These links support only the clearly labelled enrichment blocks.</p><div className="source-chips">{lesson.enrichment_sources.map((source, index) => <a className="source-chip" href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>{source.title}</a>)}</div></div>}
       {lesson.enrichment_status === "skipped" && <div className="enrichment-status" role="status"><strong>Optional online enrichment was skipped</strong><p>{lesson.enrichment_message || "The web-assisted pass was unavailable. Your core lesson and uploaded-note sources are complete and unaffected."}</p></div>}
-      <VerifiedCalculations calculations={lesson.verified_calculations} paper />
       {lesson.visual_enhancements?.some((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)) && <section className="note-section stem-visuals"><h2>Additional verified visuals</h2><p className="paper-muted">These could not be matched safely to one exact section, so they are kept separate.</p><div className="visual-grid">{lesson.visual_enhancements.filter((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)).map((visual, index) => <VisualEnhancementCard key={visual.id || `${visual.kind}-${index}`} visual={visual} />)}</div></section>}
       {lesson.supplementary_images?.some((image) => !image.sectionHeading || !(lesson.sections || []).some((section) => section.heading === image.sectionHeading)) && (
         <div className="note-section">
@@ -2153,11 +2183,10 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
           </div>
         </div>
       )}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 28 }}>
+      <div className="note-actions">
         <button className="btn" onClick={onPractice}>Go to Practice</button>
-        <button className="btn secondary" onClick={onAskNotes}>Ask about these notes</button>
-        <button className="btn secondary" onClick={onEnhanceVisuals} disabled={loading}>{lesson.online_enrichments?.length || lesson.visual_enhancements?.length ? "Refresh online enrichment" : "Add online enrichment"}</button>
-        <button className="btn secondary" onClick={onRegenerate} disabled={loading}>Regenerate notes</button>
+        <button className="btn secondary note-action" onClick={onAskNotes}>Ask about these notes</button>
+        <button className="btn secondary note-action" onClick={onRegenerate} disabled={loading}>Regenerate notes</button>
       </div>
     </div>
   );
@@ -2246,7 +2275,7 @@ function ConfidenceFeedback({ feedback }) {
 
 function LearnView({
   subject, active, lesson, phase, setPhase, onBack, onRegenerate, onFetchQuestion, onSubmitAnswer,
-  onAskNotes, onEnhanceVisuals,
+  onAskNotes, practiceConfig,
   studentAnswer, setStudentAnswer, selectedOption, setSelectedOption, feedback, loading,
   questionBank, viewingBankQuestion, onOpenBankQuestion, onCloseBankQuestion,
   showNotesPeek, setShowNotesPeek, mistakePattern, answerConfidence, setAnswerConfidence, lowScoreStreak = 0,
@@ -2254,7 +2283,7 @@ function LearnView({
   const q = lesson.question;
   const inPractice = phase === "question" || phase === "bank" || phase === "practiceSetup";
   const [showHint, setShowHint] = useState(false);
-  const [selectedPracticeTypes, setSelectedPracticeTypes] = useState(["all"]);
+  const [selectedPracticeTypes, setSelectedPracticeTypes] = useState(practiceConfig?.types || ["all"]);
   const [showReviewWarning, setShowReviewWarning] = useState(false);
   const togglePracticeType = (type) => setSelectedPracticeTypes((current) => {
     if (type === "all") return ["all"];
@@ -2270,25 +2299,26 @@ function LearnView({
   return (
     <div className="app-shell">
       <div className="container">
-        <button className="btn ghost" onClick={onBack}>Back to module</button>
+        <button className="btn ghost" onClick={onBack}>Back</button>
         <h1 className="heading">{active.subtopic.name}</h1>
 
         {inPractice && (
           <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
             <button className={`btn ${phase === "question" ? "" : "secondary"}`} onClick={() => setPhase("question")}>Practice</button>
             <button className={`btn ${phase === "bank" ? "" : "secondary"}`} onClick={() => setPhase("bank")}>Past questions ({questionBank.length})</button>
+            <button className="btn secondary" onClick={() => setPhase("practiceSetup")}>Begin a new session</button>
             <button className="btn ghost" onClick={() => setShowNotesPeek(true)} style={{ marginLeft: "auto" }}>Peek at notes</button>
           </div>
         )}
 
         {phase === "notes" ? (
-          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={() => setPhase("practiceSetup")} onAskNotes={onAskNotes} onEnhanceVisuals={onEnhanceVisuals} />
+          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={() => practiceConfig?.subjectId === subject.id && practiceConfig?.lessonId === active.subtopic.id && practiceConfig?.sessionId ? setPhase("question") : setPhase("practiceSetup")} onAskNotes={onAskNotes} />
         ) : phase === "practiceSetup" ? (
           <section className="card practice-setup">
-            <h2 className="heading" style={{ marginTop: 0 }}>Choose your question types</h2>
-            <p className="muted">You will get a short-question set first. Once it is complete, StudyLoop automatically moves to a smaller, harder set. The number depends on the breadth and difficulty of these notes.</p>
+            <h2 className="heading" style={{ marginTop: 0 }}>Begin a new study session</h2>
+            <p className="muted">Choose once for this session. You will get a fresh short-question set first, followed automatically by a smaller, harder set. Older sessions stay in Past questions.</p>
             <div className="question-type-picker">{PRACTICE_TYPE_OPTIONS.map((option) => <label className="check-row" key={option.id}><input type="checkbox" checked={selectedPracticeTypes.includes(option.id)} onChange={() => togglePracticeType(option.id)} /><span>{option.label}</span></label>)}</div>
-            <button className="btn" onClick={() => onFetchQuestion({ types: normalizePracticeTypes(selectedPracticeTypes), stage: "short", reset: true })} disabled={loading}>Start short questions</button>
+            <button className="btn" onClick={() => onFetchQuestion({ types: normalizePracticeTypes(selectedPracticeTypes), stage: "short", newSession: true })} disabled={loading}>Generate this session</button>
           </section>
         ) : phase === "bank" ? (
           viewingBankQuestion ? (
@@ -2375,7 +2405,7 @@ function TopicExamView({
   return (
     <div className="app-shell">
       <div className="container">
-        <button className="btn ghost" onClick={onBack}>Back to module</button>
+        <button className="btn ghost" onClick={onBack}>Back</button>
         <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", marginBottom: 22, flexWrap: "wrap" }}>
           <div>
             <h1 className="heading" style={{ marginBottom: 6 }}>{topic.name}</h1>
@@ -2482,13 +2512,24 @@ function StemTutor() {
   const [notesScope, setNotesScope] = useState(null);
   const [notesReturnScreen, setNotesReturnScreen] = useState("subject");
   const [studyStreak, setStudyStreak] = useState({ current: 0, longest: 0, days: [] });
-  const [practiceConfig, setPracticeConfig] = useState({ types: ["all"], stage: "short" });
+  const [practiceConfig, setPracticeConfig] = useState({ subjectId: null, lessonId: null, sessionId: null, types: ["all"], stage: "short" });
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [dashboardModal, setDashboardModal] = useState(null);
   const sessionPdfBytes = useRef(new Map());
+  const navigationHistory = useRef([]);
   const dueItems = useMemo(() => dueSubtopics(subjects), [subjects]);
   const deadlinePlan = useMemo(() => buildDeadlinePlan(assessments, subjects, { sessionMinutes: settings.sessionMinutes || 30 }), [assessments, subjects, settings.sessionMinutes]);
+
+  const navigateTo = (nextScreen) => {
+    if (nextScreen === screen) return;
+    navigationHistory.current.push(screen);
+    setScreen(nextScreen);
+  };
+
+  const navigateBack = (fallback = "dashboard") => {
+    setScreen(navigationHistory.current.pop() || fallback);
+  };
 
   useEffect(() => {
     if (!uid) return;
@@ -2663,8 +2704,8 @@ function StemTutor() {
   };
 
   const openSubject = async (subject) => {
+    navigateTo("subject");
     setSelectedSubject(subject);
-    setScreen("subject");
   };
 
   const downloadLearningData = async () => {
@@ -2697,6 +2738,7 @@ function StemTutor() {
 
   const startTutorial = async () => {
     setShowSettings(false);
+    navigationHistory.current = [];
     if (subjects.length) {
       setSelectedSubject(subjects[0]);
       setScreen("subject");
@@ -2716,6 +2758,7 @@ function StemTutor() {
 
   const finishTutorial = async () => {
     setTutorialStep(null);
+    navigationHistory.current = [];
     setScreen("dashboard");
     await persistSettings({ tutorialSeen: true, tutorialAwaitingModule: false });
   };
@@ -3047,10 +3090,10 @@ Return only topicGroups.`;
   };
 
   const openNotesAssistant = async (subject, lessonScope = null, returnScreen = "subject") => {
+    navigateTo("notesAssistant");
     setSelectedSubject(subject);
     setNotesScope(lessonScope);
     setNotesReturnScreen(returnScreen);
-    setScreen("notesAssistant");
     try {
       setNotesMessages(await getArtifact(uid, "notesChat", notesChatScopeKey(subject.id, lessonScope?.id)) || []);
     } catch {
@@ -3256,7 +3299,7 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
         saveLocalCollections(next);
       }
       setSelectedSubject(subjectDoc);
-      setScreen("subject");
+      navigateTo("subject");
       if (settings.tutorialAwaitingModule) {
         await persistSettings({ tutorialAwaitingModule: false, tutorialSeen: false });
         setTutorialStep(1);
@@ -3487,7 +3530,7 @@ Search before deciding, omit weak or redundant additions, and return only valid 
           setLesson(cachedLesson);
           setActive({ topic, subtopic });
           setPhase("notes");
-          setScreen("learn");
+          navigateTo("learn");
           setLoading(false);
           return;
         }
@@ -3533,9 +3576,10 @@ Quality bar:
 - The prose must explicitly teach how to read each requested chemical structure or circuit. Do not let the visual replace definitions, reasoning, equations, assumptions, or source coverage.
 - Treat graphs as core mathematical notation too. When a section teaches the behaviour of a scalar function or a physics relationship whose shape matters, add a graphs entry with a stable id, the exact section heading, teaching purpose, a Math.js-compatible right-hand-side equation using one independent variable, sensible numeric domain_min/domain_max, and axis labels. Do not include an equals sign in equation and do not invent parameters absent from the notes. Use an empty graphs array when a graph would be decorative or when the relationship cannot be represented faithfully as a single-variable function.
 - Do not perform arithmetic or numerical evaluation yourself. Formulate each required equation symbolically, then add a calculation_requests entry containing the fully substituted expression for the app's deterministic calculator. The expression must be compatible with Math.js, include units where useful (for example "12 kg * 3.5 m/s^2"), and never contain an equals sign or prose. Refer to the result as calculator-verified rather than inventing a numeric result in lesson prose.
+- Place every numerical relationship in the relevant section's equations array. For every calculation_requests entry, set equation_number to the exact number of the equation it verifies, or set worked_step to the 1-based worked-example step it verifies. Do not leave both placement fields empty.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
-- Wrap every inline mathematical symbol, variable, unit, chemical formula, reaction, and chemical expression in Markdown LaTeX delimiters. Do not leave mathematical or chemical notation as unformatted plain text.
+- Wrap every inline mathematical symbol, variable, unit, chemical formula, reaction, and chemical expression in Markdown LaTeX delimiters. Use literal Markdown delimiters $...$ for inline maths and $$...$$ for display maths; never escape the dollar delimiters and never use \\(...\\) or \\[...\\]. Escape LaTeX backslashes correctly in the JSON string. Do not leave mathematical or chemical notation as unformatted plain text.
 
 Before returning, silently self-check every equation, claim, and worked-example step for correctness and remove filler. Return only the requested JSON.`;
       const finalLesson = await runReliableTask(async (attempt) => {
@@ -3562,38 +3606,13 @@ Before returning, silently self-check every equation, claim, and worked-example 
       setLesson(payload);
       setActive({ topic, subtopic });
       setPhase("notes");
-      setScreen("learn");
+      navigateTo("learn");
       setLessonStatus((prev) => new Set([...prev, subtopic.id]));
       setQuestionBank([]);
       setViewingBankQuestion(null);
       if (enrichmentPlan.enrichment_status === "skipped") showToast("Core lesson generated successfully. Optional online enrichment was skipped; the reason is shown in the notes.", "info");
     } catch (err) {
       showToast(err.message, "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const enhanceCurrentLessonVisuals = async () => {
-    if (!selectedSubject || !active || !lesson) return;
-    setLoading(true);
-    try {
-      const enrichmentPlan = await buildGroundedLessonEnrichment(lesson, selectedSubject, active.topic, active.subtopic);
-      setLoadingMsg("Resolving and verifying lesson visuals...");
-      const visual_enhancements = await resolveOptionalVisualRequests(selectedSubject, enrichmentPlan.visual_requests);
-      const enrichmentUpdate = enrichmentPlan.enrichment_status === "skipped"
-        ? { enrichment_status: "skipped", enrichment_message: enrichmentPlan.enrichment_message, enrichmentVersion: 1, visualEnhancementUpdatedAt: Date.now() }
-        : { online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, enrichment_status: "completed", enrichment_message: "", visual_enhancements, enrichmentVersion: 1, visualEnhancementUpdatedAt: Date.now() };
-      const nextLesson = { ...lesson, ...enrichmentUpdate };
-      const key = lessonKey(selectedSubject.id, active.subtopic.id);
-      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), { ...enrichmentUpdate, visualEnhancementUpdatedAt: serverTimestamp() }, { merge: true });
-      await saveArtifact(uid, "lesson", key, nextLesson);
-      setLesson(nextLesson);
-      const additions = enrichmentPlan.enrichments.length + visual_enhancements.length;
-      if (enrichmentPlan.enrichment_status === "skipped") showToast("The core lesson is unchanged. Online enrichment was skipped; the reason is shown in the notes.", "info");
-      else showToast(additions ? `${additions} relevant enrichment${additions === 1 ? "" : "s"} added beside the appropriate notes.` : "No reliable, relevant additions were needed for this lesson.", "success");
-    } catch (error) {
-      showToast(error.message, "error");
     } finally {
       setLoading(false);
     }
@@ -3613,14 +3632,27 @@ Before returning, silently self-check every equation, claim, and worked-example 
         bank = bankSnap.exists() ? bankSnap.data().questions || [] : [];
       } else bank = await getArtifact(uid, "questionBank", key) || [];
       setQuestionBank(bank);
-      let activeConfig = requestedConfig?.types ? { types: normalizePracticeTypes(requestedConfig.types), stage: requestedConfig.stage || "short" } : practiceConfig;
+      let activeConfig = requestedConfig?.newSession
+        ? {
+            subjectId: selectedSubject.id,
+            lessonId: active.subtopic.id,
+            sessionId: crypto.randomUUID(),
+            types: normalizePracticeTypes(requestedConfig.types),
+            stage: "short",
+          }
+        : practiceConfig;
+      if (!activeConfig.sessionId || activeConfig.subjectId !== selectedSubject.id || activeConfig.lessonId !== active.subtopic.id) {
+        setPhase("practiceSetup");
+        setLoading(false);
+        return;
+      }
       let typePlan = questionTypeInstructions(activeConfig.types, activeConfig.stage);
-      let stageQuestions = bank.filter((question) => (question.practiceStage || "legacy") === activeConfig.stage && (!question.practiceSelection || JSON.stringify(question.practiceSelection) === JSON.stringify(activeConfig.types)));
+      let stageQuestions = questionsForPracticeSession(bank, activeConfig);
       let unseen = stageQuestions.find((question) => !question.attempts?.length && typePlan.allowedTypes.includes(question.type));
       if (!unseen && activeConfig.stage === "short" && stageQuestions.length && stageQuestions.every((question) => question.attempts?.length)) {
         activeConfig = { ...activeConfig, stage: "hard" };
         typePlan = questionTypeInstructions(activeConfig.types, "hard");
-        stageQuestions = bank.filter((question) => question.practiceStage === "hard" && (!question.practiceSelection || JSON.stringify(question.practiceSelection) === JSON.stringify(activeConfig.types)));
+        stageQuestions = questionsForPracticeSession(bank, activeConfig);
         unseen = stageQuestions.find((question) => !question.attempts?.length && typePlan.allowedTypes.includes(question.type));
         showToast("Short checks complete. Moving to the harder question set.", "success");
       }
@@ -3694,7 +3726,7 @@ Return exactly ${batchSize} questions under a "questions" array, in the requeste
         .map((qItem) => verifyVisualQuestionAgainstAssets(qItem, lesson?.technical_visuals || []))
         .filter((qItem) => typePlan.allowedTypes.includes(qItem.type))
         .filter((qItem) => !typePlan.needsImage || qItem.visual_question || qItem.technical_visual_ids?.length)
-        .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types }));
+        .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types, practiceSessionId: activeConfig.sessionId }));
       if (!newQuestions.length) {
         setLoadingMsg("The first question set was malformed. Rebuilding it automatically...");
         const retryParsed = await callGeminiJSON({
@@ -3707,11 +3739,11 @@ Return exactly ${batchSize} questions under a "questions" array, in the requeste
           .map((qItem) => verifyVisualQuestionAgainstAssets(qItem, lesson?.technical_visuals || []))
           .filter((qItem) => typePlan.allowedTypes.includes(qItem.type))
           .filter((qItem) => !typePlan.needsImage || qItem.visual_question || qItem.technical_visual_ids?.length)
-          .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types }));
+          .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types, practiceSessionId: activeConfig.sessionId }));
       }
       if (lesson?.graphs?.length) {
         const graphQuestion = validateQuestion(buildGraphQuestion(lesson.graphs[Math.floor(Math.random() * lesson.graphs.length)], crypto.randomUUID()));
-        if (typePlan.needsImage || activeConfig.types.includes("all")) newQuestions = [newQuestions[0], { ...graphQuestion, attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types }, ...newQuestions.slice(1)].filter(Boolean).slice(0, batchSize);
+        if (typePlan.needsImage || activeConfig.types.includes("all")) newQuestions = [newQuestions[0], { ...graphQuestion, attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types, practiceSessionId: activeConfig.sessionId }, ...newQuestions.slice(1)].filter(Boolean).slice(0, batchSize);
       }
       if (!newQuestions.length) throw new Error("The AI didn't return any questions. Try again.");
       const nextBank = [...bank, ...newQuestions];
@@ -3750,7 +3782,7 @@ Return exactly ${batchSize} questions under a "questions" array, in the requeste
     setSelectedOption(null);
     setFeedback(null);
     setAnswerConfidence(DEFAULT_CONFIDENCE);
-    setScreen("topicExam");
+    navigateTo("topicExam");
     try {
       const key = topicExamKey(selectedSubject.id, scope.id);
       const signature = topicSourceSignature(selectedSubject);
@@ -3848,7 +3880,7 @@ Return only the requested JSON.` }] }],
       pickTopicExamQuestion(questions[0]);
     } catch (err) {
       showToast(err.message, "error");
-      setScreen("subject");
+      navigateBack("subject");
     } finally {
       setLoading(false);
     }
@@ -4108,6 +4140,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
     if (!hasFirebase || !db) await saveArtifact(uid, "assessments", "all", remainingAssessments);
     if (selectedSubject?.id === subject.id) {
       setSelectedSubject(null);
+      navigationHistory.current = [];
       setScreen("dashboard");
     }
     showToast("Module deleted.", "info");
@@ -4206,7 +4239,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           <Dashboard
             subjects={subjects}
             modules={modules}
-            onAddSubject={() => setScreen("add")}
+            onAddSubject={() => navigateTo("add")}
             onOpenSubject={openSubject}
             onCreateModule={() => setDashboardModal({ kind: "createModule" })}
             onRenameModule={(module) => setDashboardModal({ kind: "renameModule", module })}
@@ -4219,19 +4252,19 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
             sessionMinutes={settings.sessionMinutes || 30}
             onStartDue={startDueItem}
             deadlinePlan={deadlinePlan}
-            onManageAssessments={() => setScreen("assessments")}
+            onManageAssessments={() => navigateTo("assessments")}
             studyStreak={studyStreak}
           />
         </>
       ) : screen === "assessments" ? (
-        <AssessmentPlanner subjects={subjects} assessments={assessments} onBack={() => setScreen("dashboard")} onSave={saveAssessment} onDelete={deleteAssessment} onToggleComplete={toggleAssessmentComplete} onUpdate={updateAssessment} loading={loading} gpaScale={settings.gpaScale || 4.2} onGpaScaleChange={(gpaScale) => persistSettings({ gpaScale })} studyContext={settings.studyContext} />
+        <AssessmentPlanner subjects={subjects} assessments={assessments} onBack={() => navigateBack("dashboard")} onSave={saveAssessment} onDelete={deleteAssessment} onToggleComplete={toggleAssessmentComplete} onUpdate={updateAssessment} loading={loading} gpaScale={settings.gpaScale || 4.2} onGpaScaleChange={(gpaScale) => persistSettings({ gpaScale })} studyContext={settings.studyContext} />
       ) : screen === "add" ? (
-        <AddSubject onBack={() => setScreen("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} studyContext={settings.studyContext} />
+        <AddSubject onBack={() => navigateBack("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} studyContext={settings.studyContext} />
       ) : screen === "subject" && selectedSubject ? (
         <SubjectView
           subject={selectedSubject}
           lessonStatus={lessonStatus}
-          onBack={() => setScreen("dashboard")}
+          onBack={() => navigateBack("dashboard")}
           onStartSubtopic={(topic, subtopic) => generateLesson(selectedSubject, topic, subtopic)}
           onStartModuleExam={(scope) => startTopicExam(scope)}
           onReviewWeak={reviewWeak}
@@ -4244,7 +4277,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           showToast={showToast}
         />
       ) : screen === "notesAssistant" && selectedSubject ? (
-        <NotesAssistant subject={selectedSubject} lessonScope={notesScope} messages={notesMessages} onBack={() => setScreen(notesReturnScreen)} onAsk={askNotes} onClear={clearNotesAssistant} loading={loading} studyContext={settings.studyContext} />
+        <NotesAssistant subject={selectedSubject} lessonScope={notesScope} messages={notesMessages} onBack={() => navigateBack(notesReturnScreen)} onAsk={askNotes} onClear={clearNotesAssistant} loading={loading} studyContext={settings.studyContext} />
       ) : screen === "learn" && selectedSubject && active && lesson ? (
         <LearnView
           subject={selectedSubject}
@@ -4252,10 +4285,10 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           lesson={lesson}
           phase={phase}
           setPhase={setPhase}
-          onBack={() => setScreen("subject")}
+          onBack={() => navigateBack("subject")}
           onRegenerate={() => generateLesson(selectedSubject, active.topic, active.subtopic, true)}
           onAskNotes={() => openNotesAssistant(selectedSubject, active.subtopic, "learn")}
-          onEnhanceVisuals={enhanceCurrentLessonVisuals}
+          practiceConfig={practiceConfig}
           onFetchQuestion={fetchQuestion}
           onSubmitAnswer={submitAnswer}
           studentAnswer={studentAnswer}
@@ -4286,7 +4319,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           selectedOption={selectedOption}
           setSelectedOption={setSelectedOption}
           feedback={feedback}
-          onBack={() => setScreen("subject")}
+          onBack={() => navigateBack("subject")}
           onRegenerate={() => startTopicExam(activeTopicExam, true)}
           onPickQuestion={pickTopicExamQuestion}
           onSubmitAnswer={submitTopicExamAnswer}
