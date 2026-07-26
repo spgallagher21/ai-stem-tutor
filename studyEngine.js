@@ -56,7 +56,7 @@ export function assessmentScopeItems(assessment, subject) {
   return all.filter((item) => selectedTopics.has(item.topic.id) || selectedLessons.has(item.subtopic.id));
 }
 
-export function buildDeadlinePlan(assessments, subjects, { now = Date.now(), sessionMinutes = 30, maxAssessments = 3 } = {}) {
+export function buildDeadlinePlan(assessments, subjects, { now = Date.now(), sessionMinutes = 30, maxAssessments = 2, relevanceDays = 14 } = {}) {
   const subjectById = new Map(subjects.map((subject) => [subject.id, subject]));
   const plans = (assessments || [])
     .filter((assessment) => assessment.status !== "completed" && Number(assessment.dueAt) >= now - DAY)
@@ -72,6 +72,7 @@ export function buildDeadlinePlan(assessments, subjects, { now = Date.now(), ses
       const recommendedItems = remaining.slice(0, Math.max(1, Math.floor(sessionMinutes / 10)));
       return { ...assessment, subject, scope, remaining, remainingMinutes, daysRemaining, dailyMinutes, urgency, recommendedItems, completedCount: scope.length - remaining.length, totalCount: scope.length };
     })
+    .filter((plan) => plan.daysRemaining <= relevanceDays || plan.dailyMinutes >= Math.max(10, sessionMinutes / 2))
     .sort((a, b) => a.daysRemaining - b.daysRemaining || b.remainingMinutes - a.remainingMinutes)
     .slice(0, maxAssessments);
   const weights = plans.map((plan) => Math.max(1, Math.min(plan.dailyMinutes || 1, sessionMinutes)) * (plan.urgency === "urgent" ? 2 : plan.urgency === "soon" ? 1.4 : 1));
