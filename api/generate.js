@@ -8,6 +8,11 @@ const MODELS = (process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || DEFAULT
   .split(",")
   .map((model) => model.trim())
   .filter(Boolean);
+const DEFAULT_SEARCH_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
+const SEARCH_MODELS = (process.env.GEMINI_SEARCH_MODELS || DEFAULT_SEARCH_MODELS.join(","))
+  .split(",")
+  .map((model) => model.trim())
+  .filter(Boolean);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -25,6 +30,25 @@ function shouldTryNextModel(status, message) {
   return status === 404
     || status === 503
     || /high demand|overloaded|unavailable|no longer available|not found/i.test(String(message || ""));
+}
+
+export function requestUsesGoogleSearch(tools) {
+  return Array.isArray(tools) && tools.some((tool) => tool?.google_search || tool?.googleSearch);
+}
+
+export function modelsForTools(tools) {
+  return requestUsesGoogleSearch(tools) ? SEARCH_MODELS : MODELS;
+}
+
+export function extractQuotaInfo(data) {
+  const details = Array.isArray(data?.error?.details) ? data.error.details : [];
+  const quotaFailure = details.find((detail) => String(detail?.["@type"] || "").includes("QuotaFailure"));
+  const violation = quotaFailure?.violations?.[0] || {};
+  const message = String(data?.error?.message || "");
+  return {
+    quotaMetric: String(violation.quotaMetric || message.match(/quota exceeded for metric:\s*([^,\s]+)/i)?.[1] || ""),
+    quotaReason: String(violation.description || violation.quotaId || ""),
+  };
 }
 
 export default async function handler(req, res) {
@@ -69,15 +93,19 @@ export default async function handler(req, res) {
   };
 
   if (tools) payload.tools = tools;
+  const requestKind = requestUsesGoogleSearch(tools) ? "search" : "standard";
+  const models = modelsForTools(tools);
 
   const maxAttempts = 2;
   let lastErrMessage = "Gemini request failed.";
   let lastStatus = 502;
+  let providerAttempts = 0;
 
-  for (const model of MODELS) {
+  for (const model of models) {
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        providerAttempts += 1;
         const r = await fetchWithTimeout(`${geminiUrl}?key=${encodeURIComponent(apiKey)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -97,20 +125,21 @@ export default async function handler(req, res) {
           lastStatus = r.status;
           lastErrMessage = data?.error?.message || `Gemini error (status ${r.status})`;
           const retryAfterSeconds = extractRetryAfterSeconds(data);
+          const quotaInfo = extractQuotaInfo(data);
           const tryNextModel = shouldTryNextModel(r.status, lastErrMessage);
           const retryable = r.status >= 500 && !tryNextModel;
           if (r.status === 429) {
-            return res.status(r.status).json({ error: lastErrMessage, retryAfterSeconds, model });
+            return res.status(r.status).json({ error: lastErrMessage, errorSource: "gemini", retryAfterSeconds, model, requestKind, providerAttempts, ...quotaInfo });
           }
           if (tryNextModel) break;
           if (retryable && attempt < maxAttempts) {
             await sleep(attempt * 700);
             continue;
           }
-          return res.status(r.status).json({ error: lastErrMessage, model });
+          return res.status(r.status).json({ error: lastErrMessage, errorSource: "gemini", model, requestKind, providerAttempts });
         }
 
-        return res.status(200).json({ ...data, modelUsed: model });
+        return res.status(200).json({ ...data, modelUsed: model, requestKind, providerAttempts });
       } catch (err) {
         lastErrMessage = err.message || "Network error calling Gemini.";
         lastStatus = 502;
@@ -123,6 +152,9 @@ export default async function handler(req, res) {
   }
 
   return res.status(lastStatus).json({
-    error: `${lastErrMessage} Tried models: ${MODELS.join(", ")}.`,
+    error: `${lastErrMessage} Tried models: ${models.join(", ")}.`,
+    errorSource: "gemini",
+    requestKind,
+    providerAttempts,
   });
 }

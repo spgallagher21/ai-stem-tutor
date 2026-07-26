@@ -29,6 +29,7 @@ import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTop
 import { buildGradeSummary } from "./gradebook";
 import { PRACTICE_TYPE_OPTIONS, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, recentLowScoreStreak } from "./practiceEngine";
 import { normalizeStudyStreak, recordStudyDay } from "./streak";
+import { describeAiFailure, mergeAiUsage } from "./aiUsage";
 import { effectiveLearningMinutes } from "./timeEstimates";
 import { extractWebSources, notesChatScopeKey } from "./webGrounding";
 import { validateVisualRequests, visualCacheKey } from "./visualEnhancements";
@@ -62,14 +63,14 @@ const APP_NAME = "StudyLoop";
 
 function studyAreaProfile(context = "") {
   const value = String(context).toLowerCase();
-  if (/medic|nurs|anatom|physiol|health/.test(value)) return { module: "Human Physiology", topic: "cardiac output", question: "How does stroke volume affect cardiac output?", search: "cardiovascular physiology review" };
-  if (/chem|pharma|biochem/.test(value)) return { module: "Organic Chemistry", topic: "nucleophilic substitution", question: "Compare the $S_N1$ and $S_N2$ mechanisms.", search: "nucleophilic substitution review" };
-  if (/bio|zool|ecol|genetic/.test(value)) return { module: "Cell Biology", topic: "membrane transport", question: "Why does the electrochemical gradient affect ion transport?", search: "cell membrane transport review" };
-  if (/electr|circuit|computer engineering/.test(value)) return { module: "Circuit Analysis", topic: "transient response", question: "Explain the time constant $\\tau = RC$.", search: "RC transient response university notes" };
-  if (/mechan|aero|civil|physics/.test(value)) return { module: "Engineering Mechanics", topic: "stress and strain", question: "Explain the meaning of $\\sigma = F/A$.", search: "stress strain engineering review" };
-  if (/computer|software|data|program/.test(value)) return { module: "Algorithms", topic: "time complexity", question: "Why is binary search $O(\\log n)$?", search: "algorithm complexity university chapter" };
-  if (/math|stat/.test(value)) return { module: "Applied Mathematics", topic: "eigenvalues", question: "What does $A\\mathbf{v}=\\lambda\\mathbf{v}$ mean geometrically?", search: "eigenvalues geometric interpretation" };
-  return { module: "Example Module", topic: "core principles", question: "Can you explain this concept using the lecture assumptions?", search: "university topic review" };
+  if (/medic|nurs|anatom|physiol|health/.test(value)) return { module: "Human Physiology", topic: "cardiac output", question: "How does stroke volume affect cardiac output?" };
+  if (/chem|pharma|biochem/.test(value)) return { module: "Organic Chemistry", topic: "nucleophilic substitution", question: "Compare the $S_N1$ and $S_N2$ mechanisms." };
+  if (/bio|zool|ecol|genetic/.test(value)) return { module: "Cell Biology", topic: "membrane transport", question: "Why does the electrochemical gradient affect ion transport?" };
+  if (/electr|circuit|computer engineering/.test(value)) return { module: "Circuit Analysis", topic: "transient response", question: "Explain the time constant $\\tau = RC$." };
+  if (/mechan|aero|civil|physics/.test(value)) return { module: "Engineering Mechanics", topic: "stress and strain", question: "Explain the meaning of $\\sigma = F/A$." };
+  if (/computer|software|data|program/.test(value)) return { module: "Algorithms", topic: "time complexity", question: "Why is binary search $O(\\log n)$?" };
+  if (/math|stat/.test(value)) return { module: "Applied Mathematics", topic: "eigenvalues", question: "What does $A\\mathbf{v}=\\lambda\\mathbf{v}$ mean geometrically?" };
+  return { module: "Example Module", topic: "core principles", question: "Can you explain this concept using the lecture assumptions?" };
 }
 
 const THEME_CHOICES = [
@@ -845,7 +846,7 @@ function computeAdaptiveDifficulty(baseDifficulty, bank) {
 
 // --- 2.1 / 2.2 Proactive client-side throttling + backoff with jitter ---
 const CALL_WINDOW_MS = 60000;
-const SOFT_CEILING = 4; // stay under the free-tier 5 requests/minute limit
+const SOFT_CEILING = 4; // conservative client-side pacing; provider limits vary by project and model
 const callTimestamps = [];
 let quotaCooldownUntil = 0;
 const IMAGE_CALL_WINDOW_MS = 60000;
@@ -866,48 +867,55 @@ function getThrottleWaitMs() {
   return Math.max(0, CALL_WINDOW_MS - (Date.now() - oldest) + 250);
 }
 
-function extractRetrySeconds(message) {
-  const retryMatch = String(message || "").match(/retry\s+in\s+([\d.]+)/i);
-  return retryMatch ? Math.ceil(Number(retryMatch[1])) : 60;
-}
-
 function isQuotaError(message, status) {
   return status === 429 || /quota|rate.?limit|generate_content_free/i.test(String(message || ""));
-}
-
-function friendlyGeminiError(message, status, retryAfterSeconds) {
-  if (!isQuotaError(message, status)) return message;
-  const retrySeconds = retryAfterSeconds || extractRetrySeconds(message);
-  quotaCooldownUntil = Date.now() + retrySeconds * 1000;
-  return `Gemini free-tier quota reached. Wait about ${retrySeconds}s, then try again. To avoid this, upload one topic at a time and let each AI step finish before starting another.`;
 }
 
 function usageStorageKey() {
   return `stem-ai-calls-${new Date().toISOString().slice(0, 10)}`;
 }
 
-function getUsageTodayCount() {
+function getUsageToday() {
   try {
-    return parseInt(localStorage.getItem(usageStorageKey()) || "0", 10);
-  } catch (e) {
-    return 0;
+    const stored = localStorage.getItem(usageStorageKey());
+    if (!stored) return mergeAiUsage();
+    const parsed = JSON.parse(stored);
+    return typeof parsed === "number" ? mergeAiUsage({}, { apiRequests: parsed, providerAttempts: parsed, standardRequests: parsed }) : mergeAiUsage(parsed);
+  } catch {
+    return mergeAiUsage();
   }
 }
 
-function incrementUsageToday() {
+function recordAiUsage(event) {
   try {
-    const next = getUsageTodayCount() + 1;
-    localStorage.setItem(usageStorageKey(), String(next));
+    const next = mergeAiUsage(getUsageToday(), event);
+    localStorage.setItem(usageStorageKey(), JSON.stringify(next));
     return next;
-  } catch (e) {
-    return getUsageTodayCount();
+  } catch {
+    return getUsageToday();
   }
 }
 
 function recordCall() {
   pruneCallLog();
   callTimestamps.push(Date.now());
-  incrementUsageToday();
+}
+
+function usageEventFromResponse(data, { failed = false, repair = false } = {}) {
+  const providerAttempts = Math.max(0, Number(data?.providerAttempts ?? (data?.errorSource === "app_rate_limit" ? 0 : 1)));
+  const usage = data?.usageMetadata || {};
+  const search = data?.requestKind === "search";
+  return {
+    apiRequests: 1,
+    providerAttempts,
+    standardRequests: search ? 0 : providerAttempts,
+    searchRequests: search ? providerAttempts : 0,
+    repairRequests: repair ? providerAttempts : 0,
+    failedRequests: failed ? 1 : 0,
+    inputTokens: Number(usage.promptTokenCount || 0),
+    outputTokens: Number(usage.candidatesTokenCount || 0),
+    totalTokens: Number(usage.totalTokenCount || 0),
+  };
 }
 
 function pruneImageCallLog() {
@@ -942,6 +950,7 @@ async function describeImage(imageBase64, { onStatus } = {}) {
     body: JSON.stringify({ imageBase64 }),
   });
   const data = await res.json();
+  recordAiUsage({ apiRequests: 1, visionRequests: 1, providerAttempts: 1, failedRequests: !res.ok || data.error ? 1 : 0 });
   if (!res.ok || data.error) throw new Error(data.error || "Could not describe image.");
   return data;
 }
@@ -950,6 +959,7 @@ async function recognizeStemNotation(imageBase64) {
   const token = await auth?.currentUser?.getIdToken();
   const res = await fetch(DESCRIBE_IMAGE_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ imageBase64, mode: "stem_notation" }) });
   const data = await res.json();
+  recordAiUsage({ apiRequests: 1, visionRequests: 1, providerAttempts: 1, failedRequests: !res.ok || data.error ? 1 : 0 });
   if (!res.ok || data.error) throw new Error(data.error || "Could not recognise chemical or circuit notation.");
   return data;
 }
@@ -958,6 +968,7 @@ async function transcribeMathImage(imageBase64) {
   const token = await auth?.currentUser?.getIdToken();
   const res = await fetch(DESCRIBE_IMAGE_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ imageBase64, mode: "math_answer" }) });
   const data = await res.json();
+  recordAiUsage({ apiRequests: 1, visionRequests: 1, providerAttempts: 1, failedRequests: !res.ok || data.error ? 1 : 0 });
   if (!res.ok || data.error || !data.reliable) throw new Error(data.error || "The handwriting could not be verified reliably.");
   return data;
 }
@@ -978,7 +989,7 @@ async function prepareAnswerImage(file) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-async function callGemini({ contents, generationConfig, apiKey, documentPart, tools, returnCandidate = false }, { retries = 0, onStatus } = {}) {
+async function callGemini({ contents, generationConfig, apiKey, documentPart, tools, returnCandidate = false }, { retries = 0, onStatus, usageCategory = "generation" } = {}) {
   const trimmedApiKey = (apiKey || "").trim();
   if (!trimmedApiKey) throw new Error("Enter your Gemini API key before using the tutor.");
 
@@ -1004,11 +1015,15 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
         body: JSON.stringify({ contents, generationConfig, apiKey: trimmedApiKey, documentPart, tools }),
       });
       const data = await res.json();
+      recordAiUsage(usageEventFromResponse(data, { failed: !res.ok || Boolean(data.error), repair: usageCategory === "repair" }));
       if (!res.ok || data.error) {
         const msg = data.error || `Request failed (status ${res.status}).`;
         if (isQuotaError(msg, res.status)) {
-          const quotaError = new Error(friendlyGeminiError(msg, res.status, data.retryAfterSeconds));
-          quotaError.retryable = false;
+          const diagnosis = describeAiFailure(data, res.status);
+          if (diagnosis.cooldownSeconds) quotaCooldownUntil = Date.now() + diagnosis.cooldownSeconds * 1000;
+          const quotaError = new Error(diagnosis.message);
+          quotaError.retryable = diagnosis.retryable;
+          quotaError.retryAfterMs = diagnosis.cooldownSeconds ? diagnosis.cooldownSeconds * 1000 : 0;
           throw quotaError;
         }
         if (res.status >= 500 && attempt < retries) {
@@ -1035,8 +1050,8 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
     } catch (err) {
       lastErr = err;
       if (err.retryable === false || attempt >= retries) throw lastErr;
-      const backoff = Math.min(8000, 700 * 2 ** attempt) + Math.random() * 400;
-      onStatus?.("The AI is recharging for a moment...");
+      const backoff = err.retryAfterMs || Math.min(8000, 700 * 2 ** attempt) + Math.random() * 400;
+      onStatus?.(err.retryAfterMs ? `The provider asked StudyLoop to wait ${Math.ceil(backoff / 1000)}s before retrying...` : "The AI is recharging for a moment...");
       await sleep(backoff);
     }
   }
@@ -1062,7 +1077,7 @@ async function callGeminiJSON(request, { onStatus, label = "AI response" } = {})
         temperature: 0,
         responseMimeType: "application/json",
       },
-    }, { retries: 1, onStatus });
+    }, { retries: 1, onStatus, usageCategory: "repair" });
     return safeParseJSON(repaired);
   }
 }
@@ -1309,7 +1324,7 @@ function Onboarding({ settings, onDone, showToast, editMode = false, onCancel })
             <label className="muted" style={{ fontSize: 13 }}>Gemini API key</label>
             <input className="input" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" style={{ margin: "8px 0 0" }} />
             {editMode && (
-              <p className="muted mono" style={{ fontSize: 12, marginTop: 16 }}>AI calls today: {getUsageTodayCount()}</p>
+              <p className="muted mono" style={{ fontSize: 12, marginTop: 16 }}>AI requests today: {getUsageToday().apiRequests}</p>
             )}
           </>
         )}
@@ -1385,6 +1400,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
   const [studyMode, setStudyMode] = useState(settings.studyMode || "deep");
   const [sessionMinutes, setSessionMinutes] = useState(settings.sessionMinutes || 30);
   const [gpaScale, setGpaScale] = useState(Number(settings.gpaScale) === 4 ? 4 : 4.2);
+  const aiUsageToday = getUsageToday();
 
   const applyTheme = async (theme) => {
     document.documentElement.dataset.theme = normalizeThemeId(theme);
@@ -1420,7 +1436,13 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
             <p className="muted">Your own Gemini key keeps the app free to use and powers the tutoring pipeline.</p>
             <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Get a Gemini API key</a>
             <input className="input" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" style={{ marginTop: 12 }} />
-            <p className="muted mono" style={{ fontSize: 12 }}>AI calls today: {getUsageTodayCount()}</p>
+            <div className="ai-usage-summary">
+              <strong>AI usage today</strong>
+              <span>{aiUsageToday.apiRequests} app requests · {aiUsageToday.providerAttempts} provider attempts</span>
+              <span>{aiUsageToday.inputTokens.toLocaleString()} input · {aiUsageToday.outputTokens.toLocaleString()} output tokens</span>
+              <span>{aiUsageToday.searchRequests} web-grounded · {aiUsageToday.repairRequests} format repairs · {aiUsageToday.visionRequests} vision</span>
+              {aiUsageToday.failedRequests > 0 && <span>{aiUsageToday.failedRequests} failed request{aiUsageToday.failedRequests === 1 ? "" : "s"}</span>}
+            </div>
           </section>
 
           <section className="card" style={{ padding: 22 }}>
@@ -1451,7 +1473,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
 
           <section className="card" style={{ padding: 22 }}>
             <h2 className="heading" style={{ marginTop: 0 }}>Notifications</h2>
-            <p className="muted">Study reminders and optional academic-news updates will live here after launch. Supplementary reading is already saved by module so future notifications can follow the topics you actually study rather than sending generic science news.</p>
+            <p className="muted">Study reminders will live here after launch. They will focus on planned lessons, review intervals, streaks, and approaching deadlines.</p>
           </section>
 
           <section className="card" style={{ padding: 22 }}>
@@ -1500,7 +1522,6 @@ const TUTORIAL_STEPS = [
   { demo: "exam", title: "Generate a module exam", body: "From the module page, choose one or more topics and build an exam. Uploaded past papers and problem sets guide wording, structure, difficulty, and marks without leaking content from another module." },
   { demo: "deadlines", title: "Manage deadlines and grades", body: "Add assignments, tests, or exams and select their topics. The dashboard only shows deadlines that need attention now. Enter grades directly; summary grades remain hideable for privacy." },
   { demo: "visuals", title: "Layered notes and verified visuals", body: "Notes use uploaded sources first, clearly labelled online enrichment second, and section-anchored visuals third. Chemical structures, circuits, graphs, and source-slide figures appear beside the explanation they support." },
-  { demo: "reading", title: "Find supplementary reading", body: "The module reading tab finds reputable papers, textbook-style chapters, discoveries, and academic news related to your generated topics. Sources are linked and saved for later review." },
   { demo: "handwriting", title: "Upload handwritten maths", body: "Photograph a handwritten answer in good light. Vision transcribes it only when recognition passes reliability checks, then shows the transcription for you to verify before grading." },
   { demo: "confidence", title: "Confidence-aware learning", body: "Rate confidence before checking. It never changes the mark: a confident error is prioritised as a possible misconception, while a correct-but-uncertain answer gets an earlier reinforcement review." },
   { demo: "progress", title: "Progress and independent learning", body: "Two strong recalls can master a lesson, and spaced review schedules it again before it fades. If you learned a class elsewhere, mark it learned independently." },
@@ -1514,7 +1535,6 @@ function TutorialMock({ demo, profile = studyAreaProfile("") }) {
   if (demo === "lesson") return shell(<><span className="muted mono">{profile.module} · Lesson</span><h3 className="heading">{profile.topic}</h3><MathRenderer text={profile.question} /><div className="card" style={{ padding: 12 }}><strong>Calculator-verified and rendered in LaTeX</strong><p className="muted" style={{ marginBottom: 0 }}>Source-grounded explanations retain their lecture references.</p></div><p className="muted">Source: lecture-notes.pdf, pp. 12–14</p></>);
   if (demo === "notes") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Ask your notes</h3><div className="card" style={{ padding: 14, marginBottom: 12 }}><strong>You</strong><MathRenderer text={profile.question} /></div><div className="card" style={{ padding: 14 }}><strong>Tutor</strong><p>The answer checks the uploaded lecture explanation first and states when external context was needed.</p><span className="muted">lecture-notes.pdf · p. 18</span></div></>);
   if (demo === "practice") return shell(<><span className="muted mono">Short checks first · harder set next</span><h3><MathRenderer text={profile.question} /></h3><div className="card" style={{ padding: 14 }}><strong>Partial credit: 80%</strong><p>One required link is missing. Review the named section or continue.</p><div style={{ display: "flex", gap: 8 }}><span className="btn">Next question</span><span className="btn secondary">Review notes</span></div></div></>);
-  if (demo === "reading") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Supplementary reading</h3><p className="muted">Search: {profile.search}</p>{["Review chapter", "Recent academic paper", "New discovery or academic news"].map((kind) => <div className="card" style={{ padding: 12, marginTop: 9 }} key={kind}><strong>{kind}</strong><p className="muted" style={{ marginBottom: 0 }}>Matched to {profile.topic} · reputable linked source</p></div>)}</>);
   if (demo === "handwriting") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Handwritten answer</h3><div className="card" style={{ padding: 28, textAlign: "center", borderStyle: "dashed" }}><strong>📷 answer-page.jpg</strong><p className="muted">Image quality passed · transcription verified</p></div><label className="muted">Check the transcription before grading</label><div className="input" style={{ marginTop: 8 }}><MathRenderer text={"$\\omega_n = \\sqrt{k/m} = 20\\,\\mathrm{rad\\,s^{-1}}$"} /></div></>);
   if (demo === "dashboard") return shell(<><div style={{ display: "flex", justifyContent: "space-between" }}><h3 className="heading" style={{ marginTop: 0 }}>Modules</h3><span className="btn">Create Module</span></div><div className="card" style={{ padding: 18 }}><strong>Example Module</strong><div className="progress-bar" style={{ marginTop: 16 }}><span style={{ width: "42%" }} /></div><p className="muted mono">42% complete · 95 min left</p><p style={{ color: "var(--warning)", marginBottom: 0 }}>1 confident misconception prioritised</p></div></>);
   if (demo === "upload") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Create Example Module</h3><div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}><div className="card" style={{ padding: 16 }}><strong>Lecture notes</strong><p>✓ Topic 1 lectures.pdf</p><p>✓ Topic 2 lectures.pdf</p><span className="btn secondary">Add PDFs</span></div><div className="card" style={{ padding: 16 }}><strong>Past papers (optional)</strong><p>✓ 2025 final exam.pdf</p><span className="btn secondary">Add papers</span></div></div></>);
@@ -1660,20 +1680,7 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
   );
 }
 
-function SupplementaryReadingPanel({ reading, loading, onFind }) {
-  return <details className="card module-reading-panel" style={{ padding: 20, marginBottom: 24 }}>
-    <summary><strong className="heading">Find supplementary reading</strong><span className="muted">Papers, chapters, discoveries and academic news</span></summary>
-    <div style={{ marginTop: 16 }}>
-      <p className="muted">Searches the web for reputable material tied to this module’s generated topics. Results supplement your lectures; they do not redefine the examinable syllabus.</p>
-      <button className="btn secondary" onClick={() => onFind(Boolean(reading))} disabled={loading}>{loading ? "Searching reputable sources…" : reading ? "Refresh reading list" : "Find reading"}</button>
-      {reading?.text && <div className="supplementary-reading-content"><MathRenderer text={reading.text} /></div>}
-      {reading?.sources?.length > 0 && <div className="web-sources"><strong>Sources</strong><ul>{reading.sources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul></div>}
-      {reading?.updatedAt && <small className="muted">Updated {new Date(reading.updatedAt).toLocaleString()}</small>}
-    </div>
-  </details>;
-}
-
-function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartModuleExam, onReviewWeak, onAddModuleFiles, onAskNotes, onMarkIndependent, onSaveCurriculum, onFindReading, supplementaryReading, loading, loadingMsg, showToast }) {
+function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartModuleExam, onReviewWeak, onAddModuleFiles, onAskNotes, onMarkIndependent, onSaveCurriculum, loading, loadingMsg, showToast }) {
   const [notesFiles, setNotesFiles] = useState([]);
   const [examFiles, setExamFiles] = useState([]);
   const allTopics = subject.meta?.curriculum?.topics || [];
@@ -1766,7 +1773,6 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
           </div>
         </details>
 
-        <SupplementaryReadingPanel reading={supplementaryReading} loading={loading} onFind={(refresh) => onFindReading(subject, refresh)} />
 
         {reorganising ? (
           <section className="card curriculum-editor" style={{ padding: 20 }}>
@@ -1868,7 +1874,7 @@ function NotesAssistant({ subject, lessonScope, messages, onBack, onAsk, onClear
               {message.uncertainty && <p className="muted"><strong>Uncertainty:</strong> {message.uncertainty}</p>}
               {message.citations?.length > 0 && <div className="notes-citations"><strong>Verified sources</strong>{message.citations.map((citation, index) => <div key={`${citation.file_name}-${citation.page}-${index}`}><span>{citation.file_name}, page {citation.page}</span><small>{citation.claim}</small></div>)}</div>}
               {message.role === "assistant" && message.citations?.length === 0 && !message.webUsed && <p className="citation-warning">No matching source page was verified for this answer.</p>}
-              {message.webSearchFailed && <p className="citation-warning"><strong>Web search unavailable:</strong> the app could not retrieve a reliable external answer, so it has kept the notes-only response.</p>}
+              {message.webSearchFailed && <p className="citation-warning"><strong>Web search unavailable:</strong> {message.webSearchError || "the app could not retrieve a reliable external answer, so it has kept the notes-only response."}</p>}
               {message.webSources?.length > 0 && <div className="notes-citations web-sources"><strong>Web sources</strong>{message.webSources.map((source) => <div key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></div>)}</div>}
               {message.follow_up_questions?.length > 0 && <div className="follow-ups">{message.follow_up_questions.map((item) => <button key={item} className="btn ghost" onClick={() => onAsk(item)}>{item}</button>)}</div>}
             </article>
@@ -2135,6 +2141,7 @@ function NotePaper({ lesson, onRegenerate, onEnhanceVisuals, onPractice, onAskNo
         </div>
       )}
       {lesson.enrichment_sources?.length > 0 && <div className="source-panel external-sources" aria-label="Online enrichment sources"><strong>Sources used for online enrichment</strong><p className="paper-muted">The original lesson remains grounded in your uploads. These links support only the clearly labelled enrichment blocks.</p><div className="source-chips">{lesson.enrichment_sources.map((source, index) => <a className="source-chip" href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>{source.title}</a>)}</div></div>}
+      {lesson.enrichment_status === "skipped" && <div className="enrichment-status" role="status"><strong>Optional online enrichment was skipped</strong><p>{lesson.enrichment_message || "The web-assisted pass was unavailable. Your core lesson and uploaded-note sources are complete and unaffected."}</p></div>}
       <VerifiedCalculations calculations={lesson.verified_calculations} paper />
       {lesson.visual_enhancements?.some((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)) && <section className="note-section stem-visuals"><h2>Additional verified visuals</h2><p className="paper-muted">These could not be matched safely to one exact section, so they are kept separate.</p><div className="visual-grid">{lesson.visual_enhancements.filter((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)).map((visual, index) => <VisualEnhancementCard key={visual.id || `${visual.kind}-${index}`} visual={visual} />)}</div></section>}
       {lesson.supplementary_images?.some((image) => !image.sectionHeading || !(lesson.sections || []).some((section) => section.heading === image.sectionHeading)) && (
@@ -2474,7 +2481,6 @@ function StemTutor() {
   const [notesMessages, setNotesMessages] = useState([]);
   const [notesScope, setNotesScope] = useState(null);
   const [notesReturnScreen, setNotesReturnScreen] = useState("subject");
-  const [supplementaryReading, setSupplementaryReading] = useState(null);
   const [studyStreak, setStudyStreak] = useState({ current: 0, longest: 0, days: [] });
   const [practiceConfig, setPracticeConfig] = useState({ types: ["all"], stage: "short" });
   const [loading, setLoading] = useState(false);
@@ -2487,6 +2493,15 @@ function StemTutor() {
   useEffect(() => {
     if (!uid) return;
     getArtifact(uid, "studyActivity", "streak").then((stored) => setStudyStreak(normalizeStudyStreak(stored || {}))).catch(() => {});
+  }, [uid]);
+
+  useEffect(() => {
+    if (!uid) return;
+    const migrationKey = `studyloop-removed-supplementary-reading:${uid}`;
+    if (localStorage.getItem(migrationKey)) return;
+    deleteArtifacts(uid, { kind: "supplementaryReading" })
+      .then(() => localStorage.setItem(migrationKey, "1"))
+      .catch(() => {});
   }, [uid]);
 
   useEffect(() => {
@@ -2641,32 +2656,6 @@ function StemTutor() {
     await saveArtifact(uid, "studyActivity", "streak", next);
   };
 
-  const findSupplementaryReading = async (subject, refresh = false) => {
-    if (!subject) return;
-    setLoading(true);
-    setLoadingMsg("Finding reputable supplementary reading...");
-    try {
-      const key = subject.id;
-      if (!refresh) {
-        const cached = await getArtifact(uid, "supplementaryReading", key);
-        if (cached) { setSupplementaryReading(cached); return; }
-      }
-      const topics = (subject.meta?.curriculum?.topics || []).map((topic) => ({ name: topic.name, lessons: (topic.subtopics || []).map((lesson) => lesson.name) }));
-      const result = await callGemini({
-        apiKey: settings.geminiApiKey,
-        contents: [{ role: "user", parts: [{ text: `${TUTOR_VOICE_PROMPT}\n\nFind a concise, high-quality supplementary reading list for the university module "${subject.meta?.name}". Search the web before answering.\n\nModule topics:\n${JSON.stringify(topics)}\n\nInclude a balanced selection where genuinely available:\n- accessible textbook chapters, university course notes, or authoritative review chapters;\n- peer-reviewed academic papers or systematic reviews;\n- important recent discoveries or academic news from universities, scholarly societies, journals, or reputable science publications.\n\nOrganise results by generated module topic. For each recommendation state its type, level, why it is relevant, and what the student should read or look for. Prefer primary papers, universities, scholarly societies, major journals, government research bodies, and open-access material. Do not recommend generic commercial study sites, SEO content farms, or material unrelated to the listed topics. Clearly distinguish recent news from established teaching sources. Return readable Markdown.` }] }],
-        tools: [{ google_search: {} }],
-        generationConfig: { temperature: 0.15 },
-        returnCandidate: true,
-      }, { retries: 2, onStatus: setLoadingMsg });
-      const reading = { text: result.text, sources: extractWebSources(result.groundingMetadata), updatedAt: Date.now() };
-      if (!reading.sources.length) throw new Error("No verifiable reading sources were returned. Try again.");
-      setSupplementaryReading(reading);
-      await saveArtifact(uid, "supplementaryReading", key, reading);
-    } catch (error) { showToast(error.message, "error"); }
-    finally { setLoading(false); }
-  };
-
   const startDueItem = (item) => {
     if (!item) return;
     setSelectedSubject(item.subject);
@@ -2675,9 +2664,7 @@ function StemTutor() {
 
   const openSubject = async (subject) => {
     setSelectedSubject(subject);
-    setSupplementaryReading(null);
     setScreen("subject");
-    try { setSupplementaryReading(await getArtifact(uid, "supplementaryReading", subject.id)); } catch { /* optional cache */ }
   };
 
   const downloadLearningData = async () => {
@@ -3141,7 +3128,7 @@ Return only the requested JSON.`;
           assistantMessage = { ...assistantMessage, text: webResult.text, webUsed: true, webSources: extractWebSources(webResult.groundingMetadata), notesGap: validated.answer };
         } catch (webError) {
           console.warn("Web fallback was unavailable", webError);
-          assistantMessage = { ...assistantMessage, webSearchFailed: true };
+          assistantMessage = { ...assistantMessage, webSearchFailed: true, webSearchError: webError.message };
         }
       }
       const nextMessages = [...pendingMessages, assistantMessage].slice(-40);
@@ -3465,10 +3452,10 @@ Search before deciding, omit weak or redundant additions, and return only valid 
       }
       const validated = validateEnrichmentPlan(suggestion, sectionHeadings);
       const enrichment_sources = extractWebSources(webResult.groundingMetadata);
-      return { ...validated, enrichments: enrichment_sources.length ? validated.enrichments : [], enrichment_sources };
+      return { ...validated, enrichments: enrichment_sources.length ? validated.enrichments : [], enrichment_sources, enrichment_status: "completed", enrichment_message: "" };
     } catch (error) {
       console.warn("Online lesson enrichment skipped", error);
-      return { enrichments: [], visual_requests: [], enrichment_sources: [] };
+      return { enrichments: [], visual_requests: [], enrichment_sources: [], enrichment_status: "skipped", enrichment_message: error.message || "Web-assisted enrichment was unavailable." };
     }
   };
 
@@ -3569,7 +3556,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
       const enrichmentPlan = await buildGroundedLessonEnrichment({ ...finalLesson, supplementary_images }, subject, topic, subtopic);
       setLoadingMsg("Resolving and verifying lesson visuals...");
       const visual_enhancements = await resolveOptionalVisualRequests(subject, enrichmentPlan.visual_requests);
-      const payload = { ...finalLesson, technical_visuals, supplementary_images, online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, visual_enhancements, enrichmentVersion: 1, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
+      const payload = { ...finalLesson, technical_visuals, supplementary_images, online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, enrichment_status: enrichmentPlan.enrichment_status, enrichment_message: enrichmentPlan.enrichment_message, visual_enhancements, enrichmentVersion: 1, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
       await saveArtifact(uid, "lesson", key, { ...payload, generatedAt: Date.now() });
       setLesson(payload);
@@ -3579,6 +3566,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
       setLessonStatus((prev) => new Set([...prev, subtopic.id]));
       setQuestionBank([]);
       setViewingBankQuestion(null);
+      if (enrichmentPlan.enrichment_status === "skipped") showToast("Core lesson generated successfully. Optional online enrichment was skipped; the reason is shown in the notes.", "info");
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -3593,14 +3581,17 @@ Before returning, silently self-check every equation, claim, and worked-example 
       const enrichmentPlan = await buildGroundedLessonEnrichment(lesson, selectedSubject, active.topic, active.subtopic);
       setLoadingMsg("Resolving and verifying lesson visuals...");
       const visual_enhancements = await resolveOptionalVisualRequests(selectedSubject, enrichmentPlan.visual_requests);
-      const enrichmentUpdate = { online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, visual_enhancements, enrichmentVersion: 1, visualEnhancementUpdatedAt: Date.now() };
+      const enrichmentUpdate = enrichmentPlan.enrichment_status === "skipped"
+        ? { enrichment_status: "skipped", enrichment_message: enrichmentPlan.enrichment_message, enrichmentVersion: 1, visualEnhancementUpdatedAt: Date.now() }
+        : { online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, enrichment_status: "completed", enrichment_message: "", visual_enhancements, enrichmentVersion: 1, visualEnhancementUpdatedAt: Date.now() };
       const nextLesson = { ...lesson, ...enrichmentUpdate };
       const key = lessonKey(selectedSubject.id, active.subtopic.id);
       if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), { ...enrichmentUpdate, visualEnhancementUpdatedAt: serverTimestamp() }, { merge: true });
       await saveArtifact(uid, "lesson", key, nextLesson);
       setLesson(nextLesson);
       const additions = enrichmentPlan.enrichments.length + visual_enhancements.length;
-      showToast(additions ? `${additions} relevant enrichment${additions === 1 ? "" : "s"} added beside the appropriate notes.` : "No reliable, relevant additions were needed for this lesson.", "success");
+      if (enrichmentPlan.enrichment_status === "skipped") showToast("The core lesson is unchanged. Online enrichment was skipped; the reason is shown in the notes.", "info");
+      else showToast(additions ? `${additions} relevant enrichment${additions === 1 ? "" : "s"} added beside the appropriate notes.` : "No reliable, relevant additions were needed for this lesson.", "success");
     } catch (error) {
       showToast(error.message, "error");
     } finally {
@@ -4248,8 +4239,6 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onAskNotes={() => openNotesAssistant(selectedSubject)}
           onMarkIndependent={(subtopic) => markLessonIndependent(selectedSubject, subtopic)}
           onSaveCurriculum={(curriculum) => saveCurriculumOrganisation(selectedSubject, curriculum)}
-          onFindReading={findSupplementaryReading}
-          supplementaryReading={supplementaryReading}
           loading={loading}
           loadingMsg={loadingMsg}
           showToast={showToast}

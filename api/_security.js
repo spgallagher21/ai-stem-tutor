@@ -54,8 +54,9 @@ export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, m
   const key = `${uid}:${clientIp(req)}`;
   const bucket = (buckets.get(key) || []).filter((timestamp) => timestamp > now - windowMs);
   if (bucket.length >= limit) {
-    res.setHeader("Retry-After", String(Math.ceil(windowMs / 1000)));
-    res.status(429).json({ error: "Too many requests. Wait a minute and try again." });
+    const retryAfterSeconds = Math.ceil(windowMs / 1000);
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+    res.status(429).json({ error: "Too many requests. Wait a minute and try again.", errorSource: "app_rate_limit", retryAfterSeconds });
     return null;
   }
   bucket.push(now);
