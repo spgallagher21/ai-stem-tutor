@@ -5,11 +5,18 @@ function repairLatexControls(value) {
     .replace(/\r(?=(?:ight|mathrm|rm)\b)/g, "\\r");
 }
 
+function repairLatexBody(value) {
+  return repairLatexControls(value)
+    .replace(/\\{2,}(?=[A-Za-z])/g, "\\")
+    .trim();
+}
+
 export function normalizeMathMarkdown(value) {
   return repairLatexControls(value)
+    .replace(/\\+\$/g, "$")
     .replace(/\\\(([\s\S]*?)\\\)/g, (_, latex) => `$${latex}$`)
     .replace(/\\\[([\s\S]*?)\\\]/g, (_, latex) => `$$${latex}$$`)
-    .replace(/\\\$([\s\S]*?)\\\$/g, (_, latex) => `$${latex}$`);
+    .replace(/(\${1,2})([\s\S]*?)\1/g, (_, delimiter, latex) => `${delimiter}${repairLatexBody(latex)}${delimiter}`);
 }
 
 function anchorKey(value) {
