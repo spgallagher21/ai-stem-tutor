@@ -27,7 +27,7 @@ import { CONFIDENCE_LABELS, DEFAULT_CONFIDENCE, confidenceFlag, confidenceInsigh
 import { buildModuleExamScope, moduleBoundaryText } from "./examScope";
 import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTopic } from "./curriculumEditor";
 import { buildGradeSummary } from "./gradebook";
-import { PRACTICE_TYPE_OPTIONS, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
+import { PRACTICE_TYPE_OPTIONS, groupQuestionBank, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
 import { normalizeStudyStreak, recordStudyDay } from "./streak";
 import { describeAiFailure, mergeAiUsage } from "./aiUsage";
 import { effectiveLearningMinutes } from "./timeEstimates";
@@ -2109,7 +2109,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
       {outcomes.length > 0 && (
         <div className="worked-box" style={{ marginTop: 0 }}>
           <strong>Learning outcomes</strong>
-          <ul>{outcomes.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          <ul>{outcomes.map((item, i) => <li key={i}><MathRenderer text={item} paper /></li>)}</ul>
         </div>
       )}
       {lesson.diagram_mermaid && <MermaidRenderer chart={lesson.diagram_mermaid} paper />}
@@ -2121,13 +2121,13 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
           <h2>{section.heading}</h2>
           <MathRenderer text={section.body} paper />
           {section.key_points?.length > 0 && (
-            <ul>{section.key_points.map((item, i) => <li key={i}>{item}</li>)}</ul>
+            <ul>{section.key_points.map((item, i) => <li key={i}><MathRenderer text={item} paper /></li>)}</ul>
           )}
           {(section.equations || []).map((eq, equationIndex) => (
             <div className="equation-row" key={eq.number}>
               <div>
                 <MathRenderer text={`$$${eq.latex}$$`} paper />
-                {eq.explanation && <div className="paper-muted">{eq.explanation}</div>}
+                {eq.explanation && <div className="paper-muted"><MathRenderer text={eq.explanation} paper /></div>}
                 <VerifiedCalculations calculations={calculationPlacement.byEquation[`${idx}:${equationIndex}`]} paper />
               </div>
               <div className="equation-number">({eq.number})</div>
@@ -2137,7 +2137,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
           {lesson.graphs?.filter((graph) => graph.section_heading === section.heading).map((graph) => <GraphView key={graph.id} graph={graph} />)}
           {sourceFigures.map((image, imageIndex) => <SupplementaryFigure key={`${image.page}-${imageIndex}`} image={image} />)}
           {anchoredVisuals.length > 0 && <div className="visual-grid anchored-visuals">{anchoredVisuals.map((visual, visualIndex) => <VisualEnhancementCard key={visual.id || `${section.heading}-enhancement-${visualIndex}`} visual={visual} />)}</div>}
-          {section.real_world_example && <p className="paper-muted"><strong>Real world:</strong> {section.real_world_example}</p>}
+          {section.real_world_example && <div className="paper-muted"><strong>Real world:</strong><MathRenderer text={section.real_world_example} paper /></div>}
         </section>{enrichment && <OnlineEnrichment enrichment={enrichment} />}</React.Fragment>;
       })}
       {worked.problem_statement && (
@@ -2152,16 +2152,16 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
       {lesson.common_mistakes?.length > 0 && (
         <div className="note-section">
           <h2>Common Mistakes</h2>
-          <ul>{lesson.common_mistakes.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          <ul>{lesson.common_mistakes.map((item, i) => <li key={i}><MathRenderer text={item} paper /></li>)}</ul>
         </div>
       )}
       {lesson.coverage_checklist?.length > 0 && (
         <div className="note-section">
           <h2>Coverage Checklist</h2>
-          <ul>{lesson.coverage_checklist.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          <ul>{lesson.coverage_checklist.map((item, i) => <li key={i}><MathRenderer text={item} paper /></li>)}</ul>
         </div>
       )}
-      {lesson.summary && <p className="paper-muted"><strong>Summary:</strong> {lesson.summary}</p>}
+      {lesson.summary && <div className="paper-muted"><strong>Summary:</strong><MathRenderer text={lesson.summary} paper /></div>}
       {lesson.technical_visuals?.some((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)) && <section className="note-section"><h2>Core chemical and circuit notation</h2><div className="visual-grid">{lesson.technical_visuals.filter((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)).map((visual, index) => <VisualEnhancementCard key={visual.id || index} visual={visual} />)}</div></section>}
       {lesson.graphs?.some((graph) => !graph.section_heading || !(lesson.sections || []).some((section) => section.heading === graph.section_heading)) && <section className="note-section"><h2>Function and physics graphs</h2>{lesson.graphs.filter((graph) => !graph.section_heading || !(lesson.sections || []).some((section) => section.heading === graph.section_heading)).map((graph) => <GraphView key={graph.id} graph={graph} />)}</section>}
       {lesson.source_refs?.length > 0 && (
@@ -2217,32 +2217,46 @@ function NotesPeek({ lesson, onClose }) {
   );
 }
 
-// --- 1.5 Past-questions bank list ---
-function QuestionBankPanel({ bank, onOpenQuestion }) {
-  const statusFor = (q) => {
-    if (!q.attempts?.length) return { label: "Unattempted", color: "var(--border)" };
+// --- 1.5 Question bank, grouped by study state ---
+function QuestionBankPanel({ bank, currentQuestionId, onOpenQuestion }) {
+  const groups = groupQuestionBank(bank, currentQuestionId);
+  const statusFor = (q, group) => {
+    if (group === "current") return { label: "Current question", color: "var(--accent-text)" };
+    if (group === "upcoming") return { label: "Not reached yet", color: "var(--text-muted)" };
     const last = q.attempts[0];
-    if (last.correct) return { label: "Correct", color: "var(--success)" };
-    if ((last.partial_credit_percent ?? 0) > 0) return { label: "Partial", color: "var(--warning)" };
-    return { label: "Wrong", color: "#ef4444" };
+    if (last.correct) return { label: "Answered · Correct", color: "var(--success)" };
+    if ((last.partial_credit_percent ?? 0) > 0) return { label: "Answered · Partial credit", color: "var(--warning)" };
+    return { label: "Answered · Needs review", color: "var(--danger)" };
   };
   if (!bank.length) return <p className="muted">No questions generated yet for this class.</p>;
-  return (
-    <div className="grid" style={{ gap: 10 }}>
-      {bank.map((q) => {
-        const status = statusFor(q);
+  const renderGroup = (key, title, description) => {
+    const questions = groups[key];
+    if (!questions.length) return null;
+    return <section className="question-bank-group" aria-labelledby={`question-bank-${key}`}>
+      <div className="question-bank-heading">
+        <div><h2 id={`question-bank-${key}`}>{title}</h2><p className="muted">{description}</p></div>
+        <span className="mono">{questions.length}</span>
+      </div>
+      <div className="grid" style={{ gap: 10 }}>{questions.map((q) => {
+        const status = statusFor(q, key);
         return (
-          <button key={q.id} className="card" onClick={() => onOpenQuestion(q)} style={{ textAlign: "left", padding: 16, cursor: "pointer", color: "var(--text)" }}>
+          <button key={q.id} className={`card question-bank-item ${key === "current" ? "current" : ""}`} onClick={() => onOpenQuestion(q)}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
               <strong>{QUESTION_TYPE_LABELS[q.type] || q.type}</strong>
               <span className="mono" style={{ color: status.color, fontSize: 13 }}>{status.label}</span>
             </div>
-            <p className="muted" style={{ margin: "8px 0 0", fontSize: 14 }}>{q.question}</p>
+            <div className="muted question-bank-preview"><MathRenderer text={q.question} /></div>
           </button>
         );
-      })}
-    </div>
-  );
+      })}</div>
+    </section>;
+  };
+  return <div className="question-bank">
+    <header><h1 className="heading">Question Bank</h1><p className="muted">See the question you are working on, what is still ahead, and everything you have already answered.</p></header>
+    {renderGroup("current", "Current", "The question shown in Practice.")}
+    {renderGroup("upcoming", "Up next", "Generated questions you have not reached yet.")}
+    {renderGroup("answered", "Answered", "Previous answers and feedback remain available for review.")}
+  </div>;
 }
 
 function ConfidenceSlider({ value, onChange, id = "answer-confidence" }) {
@@ -2275,7 +2289,7 @@ function ConfidenceFeedback({ feedback }) {
 
 function LearnView({
   subject, active, lesson, phase, setPhase, onBack, onRegenerate, onFetchQuestion, onSubmitAnswer,
-  onAskNotes, practiceConfig,
+  onAskNotes, onOpenPractice, practiceConfig,
   studentAnswer, setStudentAnswer, selectedOption, setSelectedOption, feedback, loading,
   questionBank, viewingBankQuestion, onOpenBankQuestion, onCloseBankQuestion,
   showNotesPeek, setShowNotesPeek, mistakePattern, answerConfidence, setAnswerConfidence, lowScoreStreak = 0,
@@ -2299,24 +2313,30 @@ function LearnView({
   return (
     <div className="app-shell">
       <div className="container">
-        <button className="btn ghost" onClick={onBack}>Back</button>
+        <button className="btn ghost" onClick={() => {
+          if (inPractice) {
+            onCloseBankQuestion();
+            setShowNotesPeek(false);
+            setPhase("notes");
+          } else onBack();
+        }}>{inPractice ? "Back to notes" : "Back"}</button>
         <h1 className="heading">{active.subtopic.name}</h1>
 
         {inPractice && (
           <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
-            <button className={`btn ${phase === "question" ? "" : "secondary"}`} onClick={() => setPhase("question")}>Practice</button>
-            <button className={`btn ${phase === "bank" ? "" : "secondary"}`} onClick={() => setPhase("bank")}>Past questions ({questionBank.length})</button>
-            <button className="btn secondary" onClick={() => setPhase("practiceSetup")}>Begin a new session</button>
+            <button className={`btn ${phase === "question" ? "" : "secondary"}`} onClick={onOpenPractice}>Practice</button>
+            <button className={`btn ${phase === "bank" ? "" : "secondary"}`} onClick={() => { onCloseBankQuestion(); setPhase("bank"); }}>Question Bank ({questionBank.length})</button>
+            <button className="btn secondary" onClick={() => { onCloseBankQuestion(); setPhase("practiceSetup"); }}>Begin a new session</button>
             <button className="btn ghost" onClick={() => setShowNotesPeek(true)} style={{ marginLeft: "auto" }}>Peek at notes</button>
           </div>
         )}
 
         {phase === "notes" ? (
-          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={() => practiceConfig?.subjectId === subject.id && practiceConfig?.lessonId === active.subtopic.id && practiceConfig?.sessionId ? setPhase("question") : setPhase("practiceSetup")} onAskNotes={onAskNotes} />
+          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={onOpenPractice} onAskNotes={onAskNotes} />
         ) : phase === "practiceSetup" ? (
           <section className="card practice-setup">
             <h2 className="heading" style={{ marginTop: 0 }}>Begin a new study session</h2>
-            <p className="muted">Choose once for this session. You will get a fresh short-question set first, followed automatically by a smaller, harder set. Older sessions stay in Past questions.</p>
+            <p className="muted">Choose once for this session. You will get a fresh short-question set first, followed automatically by a smaller, harder set. Older sessions stay in the Question Bank.</p>
             <div className="question-type-picker">{PRACTICE_TYPE_OPTIONS.map((option) => <label className="check-row" key={option.id}><input type="checkbox" checked={selectedPracticeTypes.includes(option.id)} onChange={() => togglePracticeType(option.id)} /><span>{option.label}</span></label>)}</div>
             <button className="btn" onClick={() => onFetchQuestion({ types: normalizePracticeTypes(selectedPracticeTypes), stage: "short", newSession: true })} disabled={loading}>Generate this session</button>
           </section>
@@ -2327,12 +2347,13 @@ function LearnView({
               <strong style={{ color: "var(--accent-text)" }}>{QUESTION_TYPE_LABELS[viewingBankQuestion.type] || viewingBankQuestion.type}</strong>
               <h2><MathRenderer text={viewingBankQuestion.question} /></h2>
               <QuestionTechnicalVisuals question={viewingBankQuestion} lesson={lesson} />
+              {viewingBankQuestion.id === q?.id && <button className="btn" onClick={onOpenPractice} style={{ marginBottom: 14 }}>Return to this question in Practice</button>}
               {viewingBankQuestion.attempts?.[0] ? (
                 <>
-                  <p className="muted"><strong>Your answer:</strong> {viewingBankQuestion.attempts[0].selectedOption || viewingBankQuestion.attempts[0].studentAnswer}</p>
+                  <div className="muted"><strong>Your answer:</strong><MathRenderer text={viewingBankQuestion.attempts[0].selectedOption || viewingBankQuestion.attempts[0].studentAnswer} /></div>
                   <div className="card" style={{ padding: 16, background: "var(--surface-2)" }}>
                     <strong>{viewingBankQuestion.attempts[0].correct ? "Correct" : `Partial credit: ${viewingBankQuestion.attempts[0].partial_credit_percent}%`}</strong>
-                    <p style={{ marginBottom: 0 }}>{viewingBankQuestion.attempts[0].feedback}</p>
+                    <MathRenderer text={viewingBankQuestion.attempts[0].feedback} />
                     <ConfidenceFeedback feedback={viewingBankQuestion.attempts[0]} />
                   </div>
                 </>
@@ -2341,7 +2362,7 @@ function LearnView({
               )}
             </div>
           ) : (
-            <QuestionBankPanel bank={questionBank} onOpenQuestion={onOpenBankQuestion} />
+            <QuestionBankPanel bank={questionBank} currentQuestionId={q?.id} onOpenQuestion={onOpenBankQuestion} />
           )
         ) : q ? (
           <div className="card" style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
@@ -3527,8 +3548,21 @@ Search before deciding, omit weak or redundant additions, and return only valid 
         const cached = hasFirebase && db ? await getDoc(doc(db, "users", uid, "lessons", key)) : null;
         const cachedLesson = cached?.exists() ? cached.data() : await getArtifact(uid, "lesson", key);
         if (cachedLesson) {
+          let savedBank = [];
+          try {
+            if (hasFirebase && db) {
+              const bankSnapshot = await getDoc(doc(db, "users", uid, "questionBanks", key));
+              savedBank = bankSnapshot.exists() ? bankSnapshot.data().questions || [] : [];
+            } else {
+              savedBank = await getArtifact(uid, "questionBank", key) || [];
+            }
+          } catch {
+            savedBank = [];
+          }
           setLesson(cachedLesson);
           setActive({ topic, subtopic });
+          setQuestionBank(savedBank);
+          setViewingBankQuestion(null);
           setPhase("notes");
           navigateTo("learn");
           setLoading(false);
@@ -3579,7 +3613,10 @@ Quality bar:
 - Place every numerical relationship in the relevant section's equations array. For every calculation_requests entry, set equation_number to the exact number of the equation it verifies, or set worked_step to the 1-based worked-example step it verifies. Do not leave both placement fields empty.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
-- Wrap every inline mathematical symbol, variable, unit, chemical formula, reaction, and chemical expression in Markdown LaTeX delimiters. Use literal Markdown delimiters $...$ for inline maths and $$...$$ for display maths; never escape the dollar delimiters and never use \\(...\\) or \\[...\\]. Escape LaTeX backslashes correctly in the JSON string. Do not leave mathematical or chemical notation as unformatted plain text.
+- Keep section bodies readable as ordinary prose. Do not put words, phrases, acronyms, ordinary numbers, numeric ranges, or unit names inside LaTeX; write examples such as "4 mA to 20 mA" and "0 °C to 100 °C" as normal text.
+- Use inline LaTeX only for a standalone mathematical variable or a compact genuinely symbolic expression, for example $R$, $\\alpha$, or $R = R_0(1 + \\alpha T)$. Never wrap a complete sentence or prose phrase in $...$, and do not use \\text{...} merely to move ordinary words into maths.
+- Put every standalone equation, derivation line, or important formula in the relevant section's equations array. Its latex field contains only the LaTeX expression without dollar delimiters; its explanation remains ordinary prose.
+- When inline maths is genuinely necessary, use literal Markdown delimiters $...$; never escape the dollar delimiters and never use \\(...\\). Escape LaTeX backslashes correctly in the JSON string. Chemical formulae may use LaTeX when subscripts, superscripts, charges, or reaction notation genuinely require it, but chemical names remain prose.
 
 Before returning, silently self-check every equation, claim, and worked-example step for correctness and remove filler. Return only the requested JSON.`;
       const finalLesson = await runReliableTask(async (attempt) => {
@@ -3616,6 +3653,33 @@ Before returning, silently self-check every equation, claim, and worked-example 
     } finally {
       setLoading(false);
     }
+  };
+
+  const openPractice = async () => {
+    if (!selectedSubject || !active || !lesson) return;
+    setViewingBankQuestion(null);
+    setShowNotesPeek(false);
+    const activeSession = practiceConfig?.subjectId === selectedSubject.id
+      && practiceConfig?.lessonId === active.subtopic.id
+      && practiceConfig?.sessionId;
+    if (!activeSession) {
+      setPhase("practiceSetup");
+      return;
+    }
+    const current = lesson.question?.practiceSessionId === practiceConfig.sessionId
+      ? questionBank.find((question) => question.id === lesson.question.id) || lesson.question
+      : null;
+    if (!current) {
+      await fetchQuestion();
+      return;
+    }
+    const attempt = current.attempts?.[0] || null;
+    setLesson((previous) => ({ ...previous, question: current }));
+    setStudentAnswer(attempt?.studentAnswer || "");
+    setSelectedOption(attempt?.selectedOption || null);
+    setFeedback(attempt);
+    setAnswerConfidence(attempt?.confidence || DEFAULT_CONFIDENCE);
+    setPhase("question");
   };
 
   const fetchQuestion = async (requestedConfig = null) => {
@@ -4288,6 +4352,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onBack={() => navigateBack("subject")}
           onRegenerate={() => generateLesson(selectedSubject, active.topic, active.subtopic, true)}
           onAskNotes={() => openNotesAssistant(selectedSubject, active.subtopic, "learn")}
+          onOpenPractice={openPractice}
           practiceConfig={practiceConfig}
           onFetchQuestion={fetchQuestion}
           onSubmitAnswer={submitAnswer}

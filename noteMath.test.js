@@ -39,6 +39,21 @@ describe("lesson maths presentation", () => {
     expect(markup).not.toContain("$0^{");
   });
 
+  it("keeps paragraph words and ordinary quantities out of LaTeX", () => {
+    const text = String.raw`The output changes from $4\text{ mA}$ to $20\text{ mA}$ across the $\text{measurement range}$ for the $input-output relationship$.`;
+    expect(normalizeMathMarkdown(text)).toBe("The output changes from 4 mA to 20 mA across the measurement range for the input-output relationship.");
+  });
+
+  it("preserves variables and genuine symbolic expressions as LaTeX", () => {
+    const text = String.raw`Let $R$ vary according to $R = R_0(1 + \alpha T)$.`;
+    expect(normalizeMathMarkdown(text)).toBe(text);
+  });
+
+  it("makes common bare symbols and indexed variables visible without wrapping prose", () => {
+    const text = String.raw`The coefficient \alpha changes R_0 while the measurement range stays readable.`;
+    expect(normalizeMathMarkdown(text)).toBe(String.raw`The coefficient $\alpha$ changes $R_0$ while the measurement range stays readable.`);
+  });
+
   it("places anchored checks under their equation and worked step", () => {
     const lesson = {
       sections: [{ equations: [{ number: "1" }, { number: "2" }] }],

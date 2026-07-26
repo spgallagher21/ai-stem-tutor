@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
+import { groupQuestionBank, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, questionsForPracticeSession, recentLowScoreStreak } from "./practiceEngine";
 
 describe("practice session planning", () => {
   it("uses lesson breadth and difficulty to size the session", () => {
@@ -30,5 +30,16 @@ describe("practice session planning", () => {
     ];
     expect(questionsForPracticeSession(bank, { sessionId: "new", stage: "short" }).map((question) => question.id)).toEqual(["new-short"]);
     expect(bank).toHaveLength(3);
+  });
+  it("separates the current, upcoming, and answered questions", () => {
+    const bank = [
+      { id: "answered", createdAt: 1, attempts: [{ correct: true }] },
+      { id: "current", createdAt: 2, attempts: [] },
+      { id: "upcoming", createdAt: 3, attempts: [] },
+    ];
+    const groups = groupQuestionBank(bank, "current");
+    expect(groups.current.map((question) => question.id)).toEqual(["current"]);
+    expect(groups.upcoming.map((question) => question.id)).toEqual(["upcoming"]);
+    expect(groups.answered.map((question) => question.id)).toEqual(["answered"]);
   });
 });

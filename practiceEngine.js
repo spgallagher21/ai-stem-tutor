@@ -66,3 +66,12 @@ export function questionsForPracticeSession(bank = [], config = {}) {
     && question.practiceStage === config.stage
   ));
 }
+
+export function groupQuestionBank(bank = [], currentQuestionId = null) {
+  const ordered = [...bank].sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+  return {
+    current: ordered.filter((question) => question.id === currentQuestionId),
+    upcoming: ordered.filter((question) => question.id !== currentQuestionId && !question.attempts?.length),
+    answered: ordered.filter((question) => question.id !== currentQuestionId && question.attempts?.length),
+  };
+}

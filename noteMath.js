@@ -11,12 +11,54 @@ function repairLatexBody(value) {
     .trim();
 }
 
+function plainTextFromMath(value) {
+  return String(value || "")
+    .replace(/\\(?:text|textrm|mathrm|operatorname)\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\[,;:! ]/g, " ")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isGenuineMath(value) {
+  const latex = String(value || "").trim();
+  const plain = plainTextFromMath(latex);
+  if (/^[A-Za-z]$/.test(latex)) return true;
+  if (/^\\[A-Za-z]+$/.test(latex)) return true;
+  if (/^[A-Za-z]+(?:[ -][A-Za-z]+)+$/.test(plain)) return false;
+  return /[=<>+\-*/^_]|\\(?:frac|sqrt|sum|prod|int|lim|log|ln|sin|cos|tan|exp|cdot|times|pm|mp|leq|geq|approx|equiv|propto|infty|partial|nabla|Delta|alpha|beta|gamma|theta|lambda|mu|rho|sigma|tau|phi|psi|omega|circ)\b/.test(latex);
+}
+
+function wrapBareMathSymbols(value) {
+  const text = String(value || "");
+  const mathSpan = /\$\$[\s\S]*?\$\$|\$[^$\n]*?\$/g;
+  let output = "";
+  let cursor = 0;
+  for (const match of text.matchAll(mathSpan)) {
+    output += wrapBareMathSymbolsInProse(text.slice(cursor, match.index));
+    output += match[0];
+    cursor = match.index + match[0].length;
+  }
+  return output + wrapBareMathSymbolsInProse(text.slice(cursor));
+}
+
+function wrapBareMathSymbolsInProse(value) {
+  return String(value || "")
+    .replace(/\\(?:alpha|beta|gamma|delta|epsilon|theta|lambda|mu|rho|sigma|tau|phi|psi|omega|Delta|Omega)\b(?:_\{?[A-Za-z0-9]+\}?|\^\{?[A-Za-z0-9+\-]+\}?)*/g, (symbol) => `$${symbol}$`)
+    .replace(/\b[A-Za-z](?:_\{?[A-Za-z0-9]+\}?|\^\{?[A-Za-z0-9+\-]+\}?)+/g, (symbol) => `$${symbol}$`);
+}
+
 export function normalizeMathMarkdown(value) {
-  return repairLatexControls(value)
+  const normalized = repairLatexControls(value)
     .replace(/\\+\$/g, "$")
     .replace(/\\\(([\s\S]*?)\\\)/g, (_, latex) => `$${latex}$`)
     .replace(/\\\[([\s\S]*?)\\\]/g, (_, latex) => `$$${latex}$$`)
-    .replace(/(\${1,2})([\s\S]*?)\1/g, (_, delimiter, latex) => `${delimiter}${repairLatexBody(latex)}${delimiter}`);
+    .replace(/(\${1,2})([\s\S]*?)\1/g, (_, delimiter, latex) => {
+      const repaired = repairLatexBody(latex);
+      if (delimiter === "$" && !isGenuineMath(repaired)) return plainTextFromMath(repaired);
+      return `${delimiter}${repaired}${delimiter}`;
+    });
+  return wrapBareMathSymbols(normalized);
 }
 
 function anchorKey(value) {
