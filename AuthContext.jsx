@@ -24,11 +24,13 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [uid, setUid] = useState(() => (firebaseReady ? null : getGuestUid()));
   const [authLoading, setAuthLoading] = useState(firebaseReady);
+  const [authError, setAuthError] = useState("");
 
   useEffect(() => {
     if (!firebaseReady || !auth) return undefined;
     const unsub = onAuthStateChanged(auth, async (currentUser) => {
       try {
+        setAuthError("");
         if (!currentUser) {
           await signInAnonymously(auth);
           return;
@@ -48,6 +50,8 @@ export function AuthProvider({ children }) {
             { merge: true }
           );
         }
+      } catch (error) {
+        setAuthError(error?.message || "Sign-in failed. Check the Firebase authentication configuration.");
       } finally {
         setAuthLoading(false);
       }
@@ -69,11 +73,12 @@ export function AuthProvider({ children }) {
       user,
       uid,
       authLoading,
+      authError,
       firebaseReady,
       isAnonymous: firebaseReady ? Boolean(user?.isAnonymous) : true,
       signInWithEmail,
     }),
-    [user, uid, authLoading]
+    [user, uid, authLoading, authError]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
