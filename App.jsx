@@ -27,6 +27,8 @@ import { CONFIDENCE_LABELS, DEFAULT_CONFIDENCE, confidenceFlag, confidenceInsigh
 import { buildModuleExamScope, moduleBoundaryText } from "./examScope";
 import { curriculumStructureSignature, moveCurriculumLesson, renameCurriculumTopic } from "./curriculumEditor";
 import { buildGradeSummary } from "./gradebook";
+import { PRACTICE_TYPE_OPTIONS, normalizePracticeTypes, questionCountForLesson, questionTypeInstructions, recentLowScoreStreak } from "./practiceEngine";
+import { normalizeStudyStreak, recordStudyDay } from "./streak";
 import { effectiveLearningMinutes } from "./timeEstimates";
 import { extractWebSources, notesChatScopeKey } from "./webGrounding";
 import { validateVisualRequests, visualCacheKey } from "./visualEnhancements";
@@ -51,12 +53,24 @@ const GENERATE_ENDPOINT = "/api/generate";
 const UPLOAD_FILE_ENDPOINT = "/api/upload-file";
 const DESCRIBE_IMAGE_ENDPOINT = "/api/describe-image";
 const MAX_ATTEMPTS_STORED = 20;
-const QUESTION_BATCH_SIZE = 2;
+const QUESTION_BATCH_SIZE = 4;
 const TOPIC_EXAM_QUESTION_COUNT = 4;
 const apiKeyStorageKey = (uid) => `stem-gemini-api-key:${uid || "guest"}`;
 const MAX_SUPPLEMENTARY_IMAGE_CANDIDATES = 4;
 const MAX_SUPPLEMENTARY_IMAGES = 2;
 const APP_NAME = "StudyLoop";
+
+function studyAreaProfile(context = "") {
+  const value = String(context).toLowerCase();
+  if (/medic|nurs|anatom|physiol|health/.test(value)) return { module: "Human Physiology", topic: "cardiac output", question: "How does stroke volume affect cardiac output?", search: "cardiovascular physiology review" };
+  if (/chem|pharma|biochem/.test(value)) return { module: "Organic Chemistry", topic: "nucleophilic substitution", question: "Compare the $S_N1$ and $S_N2$ mechanisms.", search: "nucleophilic substitution review" };
+  if (/bio|zool|ecol|genetic/.test(value)) return { module: "Cell Biology", topic: "membrane transport", question: "Why does the electrochemical gradient affect ion transport?", search: "cell membrane transport review" };
+  if (/electr|circuit|computer engineering/.test(value)) return { module: "Circuit Analysis", topic: "transient response", question: "Explain the time constant $\\tau = RC$.", search: "RC transient response university notes" };
+  if (/mechan|aero|civil|physics/.test(value)) return { module: "Engineering Mechanics", topic: "stress and strain", question: "Explain the meaning of $\\sigma = F/A$.", search: "stress strain engineering review" };
+  if (/computer|software|data|program/.test(value)) return { module: "Algorithms", topic: "time complexity", question: "Why is binary search $O(\\log n)$?", search: "algorithm complexity university chapter" };
+  if (/math|stat/.test(value)) return { module: "Applied Mathematics", topic: "eigenvalues", question: "What does $A\\mathbf{v}=\\lambda\\mathbf{v}$ mean geometrically?", search: "eigenvalues geometric interpretation" };
+  return { module: "Example Module", topic: "core principles", question: "Can you explain this concept using the lecture assumptions?", search: "university topic review" };
+}
 
 const THEME_CHOICES = [
   { id: "aurora-dark", name: "Aurora Dark" },
@@ -452,7 +466,7 @@ function buildTeachingPhilosophyPrompt(studyContext) {
   return `Teach this like the world's best tutor for a ${audience}. The lesson should be deep enough to replace a careful read-through of the relevant lecture-note pages for this class. Break it into clear sections, each building on the last, but do not compress away definitions, assumptions, derivations, edge cases, diagrams, examples, or lecturer emphasis that appears in the notes. Preserve the notes' specific named examples, cases, diseases, drugs, organisms, mechanisms, experiments, clinical signs, authors, laws, and named conditions when they are relevant; these details are often what makes the lesson useful. Use plain language; if a technical term is unavoidable, define it in plain terms the first time it appears. Every section should connect back to a real-world physical, clinical, or domain-specific example from the notes where possible, not just abstract explanation. Every full equation must be on its own line, numbered sequentially, with each term explained in words. Include a worked example that mirrors realistic exam difficulty. Avoid unnecessary jargon. Ground everything strictly in the provided lecture notes unless a fact is genuinely missing from them.`;
 }
 
-const TUTOR_VOICE_PROMPT = `Write like an experienced, respected tutor — direct and honest, not a cheerleader. When work is genuinely strong, say so specifically and briefly. When it's weak, say exactly what's wrong and why, without padding it in unearned praise first. Never open feedback with generic encouragement ("Great effort!", "Good job!") unless the work specifically earned it. Prioritize being useful to the student's understanding over being nice.`;
+const TUTOR_VOICE_PROMPT = `Write like an experienced, respected tutor — direct and honest, not a cheerleader. When work is genuinely strong, say so specifically and briefly. When it's weak, say exactly what's wrong and why, without padding it in unearned praise first. Never open feedback with generic encouragement ("Great effort!", "Good job!") unless the work specifically earned it. Prioritize being useful to the student's understanding over being nice. Wrap every mathematical variable, expression, equation, unit-bearing calculation, chemical formula, reaction, and chemical symbol in valid Markdown LaTeX delimiters, including inline references.`;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -613,6 +627,20 @@ function isBadMultipleChoiceOption(option) {
   const normalized = String(option || "").trim().toLowerCase().replace(/[_\s-]+/g, "_");
   const schemaWords = new Set(["option", "options", "correct_option", "correct", "difficulty", "mark", "marks", "modelanswer", "model_answer", "hint", "question", "type"]);
   return !normalized || schemaWords.has(normalized);
+}
+
+async function runReliableTask(task, { attempts = 2, onStatus, label = "task" } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { return await task(attempt); }
+    catch (error) {
+      lastError = error;
+      if (error?.retryable === false || attempt >= attempts) break;
+      onStatus?.(`${label} did not complete cleanly. Retrying automatically (${attempt + 1}/${attempts})...`);
+      await sleep(Math.min(5000, 600 * 2 ** attempt) + Math.random() * 300);
+    }
+  }
+  throw lastError;
 }
 
 function resolveCorrectOption(options, rawCorrect) {
@@ -1356,6 +1384,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
   const [studyContext, setStudyContext] = useState(settings.studyContext || "");
   const [studyMode, setStudyMode] = useState(settings.studyMode || "deep");
   const [sessionMinutes, setSessionMinutes] = useState(settings.sessionMinutes || 30);
+  const [gpaScale, setGpaScale] = useState(Number(settings.gpaScale) === 4 ? 4 : 4.2);
 
   const applyTheme = async (theme) => {
     document.documentElement.dataset.theme = normalizeThemeId(theme);
@@ -1363,7 +1392,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
   };
 
   const saveAiSettings = async () => {
-    await onSave({ geminiApiKey: apiKey.trim(), studyContext: studyContext.trim(), studyMode, sessionMinutes: Number(sessionMinutes) });
+    await onSave({ geminiApiKey: apiKey.trim(), studyContext: studyContext.trim(), studyMode, sessionMinutes: Number(sessionMinutes), gpaScale: Number(gpaScale) });
     showToast("Settings saved.", "success");
   };
 
@@ -1402,16 +1431,27 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
             <select id="study-mode" className="input" value={studyMode} onChange={(e) => setStudyMode(e.target.value)}>
               <option value="deep">Teach from scratch</option><option value="revision">Revision summary</option><option value="worked">Worked examples</option><option value="socratic">Socratic tutor</option><option value="cram">Exam cram</option>
             </select>
+            <div className="mode-explanation" role="status">
+              {studyMode === "deep" && <><strong>Teach from scratch</strong><span>Builds concepts in dependency order, defines terminology, derives important results, and assumes you are meeting the material for the first time.</span></>}
+              {studyMode === "revision" && <><strong>Revision summary</strong><span>Prioritises recall cues, connections, definitions, and high-yield distinctions after you have already attended the class.</span></>}
+              {studyMode === "worked" && <><strong>Worked examples</strong><span>Teaches mainly through step-by-step applications, formula selection, assumptions, units, and common ways marks are lost.</span></>}
+              {studyMode === "socratic" && <><strong>Socratic tutor</strong><span>Uses frequent prompts and predictions so you construct the explanation yourself before the tutor reveals the next link.</span></>}
+              {studyMode === "cram" && <><strong>Exam cram</strong><span>Focuses on likely assessable material, fast discrimination between similar ideas, essential formulas, and time-efficient exam technique.</span></>}
+            </div>
             <label className="muted" style={{ fontSize: 13, display: "block", marginTop: 14 }} htmlFor="session-length">Study session length</label>
             <select id="session-length" className="input" value={sessionMinutes} onChange={(e) => setSessionMinutes(e.target.value)}>
               <option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option>
+            </select>
+            <label className="muted" style={{ fontSize: 13, display: "block", marginTop: 14 }} htmlFor="gpa-scale">GPA estimate scale</label>
+            <select id="gpa-scale" className="input" value={gpaScale} onChange={(event) => setGpaScale(Number(event.target.value))}>
+              <option value="4.2">4.2 GPA (standard)</option><option value="4">4.0 GPA</option>
             </select>
             <button className="btn" onClick={saveAiSettings} style={{ marginTop: 14 }}>Save AI settings</button>
           </section>
 
           <section className="card" style={{ padding: 22 }}>
             <h2 className="heading" style={{ marginTop: 0 }}>Notifications</h2>
-            <p className="muted">Study reminders will live here after launch. For now, your learning flow stays quiet unless you ask it to do something.</p>
+            <p className="muted">Study reminders and optional academic-news updates will live here after launch. Supplementary reading is already saved by module so future notifications can follow the topics you actually study rather than sending generic science news.</p>
           </section>
 
           <section className="card" style={{ padding: 22 }}>
@@ -1435,7 +1475,7 @@ function SettingsPage({ settings, onSave, onClose, onReplayTutorial, onDeleteDat
   );
 }
 
-const TUTORIAL_STEPS = [
+const LEGACY_TUTORIAL_STEPS = [
   { demo: "dashboard", title: "Your module dashboard", body: "Create one module for each university course. The mock Example Module below shows completion, remaining study time, and the confidence signals that need attention." },
   { demo: "upload", title: "Upload notes and past papers", body: "Add one or more lecture-note PDFs. Existing uploads are preserved when you add more. Past papers are optional, but help the question generator mirror the style and mark weighting of your real exams." },
   { demo: "module", title: "AI-organised topics and classes", body: "The AI indexes the notes, creates broad topic groups, and divides them into class-sized lessons. You can add more PDFs later without replacing the earlier module map." },
@@ -1451,8 +1491,31 @@ const TUTORIAL_STEPS = [
   { demo: "settings", title: "You are ready", body: "Your API key is saved only in this browser for this account. Settings lets you change it, adjust study mode and session length, replay this tutorial, export learning data, or delete everything." },
 ];
 
-function TutorialMock({ demo }) {
+const TUTORIAL_STEPS = [
+  { demo: "dashboard", action: "create", title: "Create your first module", body: "Start with one real university module and upload at least one lecture-note PDF. Module code, semester, and past papers are optional. The tour pauses while you create it, then continues inside your new module." },
+  { demo: "module", title: "Open a module and choose a lesson", body: "Your uploaded notes are organised into broad topic groups, topics, and class-sized lessons. Open a lesson to generate its notes; you can reorganise topic names and move lessons later without breaking saved progress." },
+  { demo: "lesson", title: "Read the generated notes", body: "Lesson notes preserve source references, equations, worked examples, and coverage checks. Numerical work is calculator-verified, while mathematical and chemical notation is rendered as LaTeX." },
+  { demo: "notes", title: "Ask your notes", body: "Use Ask your notes while reading a lesson or from the module page. Answers check uploaded PDFs first and cite file and page; web search is used only when the notes are insufficient and is clearly labelled." },
+  { demo: "practice", title: "Choose questions and practise", body: "Choose the formats you want. StudyLoop generates a content-sized set of short checks first, then a harder set. Grading gives partial credit, misconception feedback, and a Next question option." },
+  { demo: "exam", title: "Generate a module exam", body: "From the module page, choose one or more topics and build an exam. Uploaded past papers and problem sets guide wording, structure, difficulty, and marks without leaking content from another module." },
+  { demo: "deadlines", title: "Manage deadlines and grades", body: "Add assignments, tests, or exams and select their topics. The dashboard only shows deadlines that need attention now. Enter grades directly; summary grades remain hideable for privacy." },
+  { demo: "visuals", title: "Layered notes and verified visuals", body: "Notes use uploaded sources first, clearly labelled online enrichment second, and section-anchored visuals third. Chemical structures, circuits, graphs, and source-slide figures appear beside the explanation they support." },
+  { demo: "reading", title: "Find supplementary reading", body: "The module reading tab finds reputable papers, textbook-style chapters, discoveries, and academic news related to your generated topics. Sources are linked and saved for later review." },
+  { demo: "handwriting", title: "Upload handwritten maths", body: "Photograph a handwritten answer in good light. Vision transcribes it only when recognition passes reliability checks, then shows the transcription for you to verify before grading." },
+  { demo: "confidence", title: "Confidence-aware learning", body: "Rate confidence before checking. It never changes the mark: a confident error is prioritised as a possible misconception, while a correct-but-uncertain answer gets an earlier reinforcement review." },
+  { demo: "progress", title: "Progress and independent learning", body: "Two strong recalls can master a lesson, and spaced review schedules it again before it fades. If you learned a class elsewhere, mark it learned independently." },
+  { demo: "settings", title: "Streaks, focus timer and settings", body: "The dashboard records study streaks and includes a 25-minute Pomodoro timer. Settings explains each learning mode, lets you choose a 4.2 or 4.0 GPA scale, and keeps your API key saved in this browser." },
+];
+
+function TutorialMock({ demo, profile = studyAreaProfile("") }) {
   const shell = (children) => <div className="card" style={{ padding: 20, minHeight: 280, background: "var(--surface-2)" }}>{children}</div>;
+  if (demo === "dashboard") return shell(<><div style={{ display: "flex", justifyContent: "space-between" }}><h3 className="heading" style={{ marginTop: 0 }}>Modules</h3><span className="btn">Create Module</span></div><div className="card" style={{ padding: 18 }}><strong>{profile.module}</strong><p className="muted">Upload lecture PDFs now; module code and semester can be left blank.</p><p style={{ color: "var(--accent-text)", marginBottom: 0 }}>The tour resumes after your module is created.</p></div></>);
+  if (demo === "module") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>{profile.module}</h3>{[profile.topic, "Foundations and definitions", "Applications and exam problems"].map((name, index) => <div key={name} className="card" style={{ padding: 14, marginTop: 10, borderColor: index === 0 ? "var(--accent-2)" : "var(--border)" }}><strong>{name}</strong><p className="muted" style={{ marginBottom: 0 }}>{index === 0 ? "Open this lesson" : "Ready to study"}</p></div>)}</>);
+  if (demo === "lesson") return shell(<><span className="muted mono">{profile.module} · Lesson</span><h3 className="heading">{profile.topic}</h3><MathRenderer text={profile.question} /><div className="card" style={{ padding: 12 }}><strong>Calculator-verified and rendered in LaTeX</strong><p className="muted" style={{ marginBottom: 0 }}>Source-grounded explanations retain their lecture references.</p></div><p className="muted">Source: lecture-notes.pdf, pp. 12–14</p></>);
+  if (demo === "notes") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Ask your notes</h3><div className="card" style={{ padding: 14, marginBottom: 12 }}><strong>You</strong><MathRenderer text={profile.question} /></div><div className="card" style={{ padding: 14 }}><strong>Tutor</strong><p>The answer checks the uploaded lecture explanation first and states when external context was needed.</p><span className="muted">lecture-notes.pdf · p. 18</span></div></>);
+  if (demo === "practice") return shell(<><span className="muted mono">Short checks first · harder set next</span><h3><MathRenderer text={profile.question} /></h3><div className="card" style={{ padding: 14 }}><strong>Partial credit: 80%</strong><p>One required link is missing. Review the named section or continue.</p><div style={{ display: "flex", gap: 8 }}><span className="btn">Next question</span><span className="btn secondary">Review notes</span></div></div></>);
+  if (demo === "reading") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Supplementary reading</h3><p className="muted">Search: {profile.search}</p>{["Review chapter", "Recent academic paper", "New discovery or academic news"].map((kind) => <div className="card" style={{ padding: 12, marginTop: 9 }} key={kind}><strong>{kind}</strong><p className="muted" style={{ marginBottom: 0 }}>Matched to {profile.topic} · reputable linked source</p></div>)}</>);
+  if (demo === "handwriting") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Handwritten answer</h3><div className="card" style={{ padding: 28, textAlign: "center", borderStyle: "dashed" }}><strong>📷 answer-page.jpg</strong><p className="muted">Image quality passed · transcription verified</p></div><label className="muted">Check the transcription before grading</label><div className="input" style={{ marginTop: 8 }}><MathRenderer text={"$\\omega_n = \\sqrt{k/m} = 20\\,\\mathrm{rad\\,s^{-1}}$"} /></div></>);
   if (demo === "dashboard") return shell(<><div style={{ display: "flex", justifyContent: "space-between" }}><h3 className="heading" style={{ marginTop: 0 }}>Modules</h3><span className="btn">Create Module</span></div><div className="card" style={{ padding: 18 }}><strong>Example Module</strong><div className="progress-bar" style={{ marginTop: 16 }}><span style={{ width: "42%" }} /></div><p className="muted mono">42% complete · 95 min left</p><p style={{ color: "var(--warning)", marginBottom: 0 }}>1 confident misconception prioritised</p></div></>);
   if (demo === "upload") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Create Example Module</h3><div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}><div className="card" style={{ padding: 16 }}><strong>Lecture notes</strong><p>✓ Topic 1 lectures.pdf</p><p>✓ Topic 2 lectures.pdf</p><span className="btn secondary">Add PDFs</span></div><div className="card" style={{ padding: 16 }}><strong>Past papers (optional)</strong><p>✓ 2025 final exam.pdf</p><span className="btn secondary">Add papers</span></div></div></>);
   if (demo === "module") return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Example topic group</h3>{["Core principles", "Analysis and interpretation", "Applied problems"].map((name, index) => <div key={name} className="card" style={{ padding: 14, marginTop: 10, borderColor: index === 1 ? "var(--warning)" : "var(--border)" }}><strong>{name}</strong><p className="muted" style={{ marginBottom: 0 }}>{index === 0 ? "Mastered" : index === 1 ? "Needs review" : "Lesson ready"}</p></div>)}</>);
@@ -1468,7 +1531,7 @@ function TutorialMock({ demo }) {
   return shell(<><h3 className="heading" style={{ marginTop: 0 }}>Settings & privacy</h3><div className="card" style={{ padding: 14 }}><strong>API key</strong><p style={{ color: "var(--success)" }}>✓ Saved in this browser for your current account</p><strong>Study preferences</strong><p>Teach from scratch · 30-minute sessions</p></div><div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}><span className="btn secondary">Replay tutorial</span><span className="btn secondary">Export data</span><span className="btn ghost">Delete my data</span></div></>);
 }
 
-function TutorialOverlay({ step, onNext, onBack, onSkip }) {
+function TutorialOverlay({ step, onNext, onBack, onSkip, onCreateModule, studyContext }) {
   const current = TUTORIAL_STEPS[step] || TUTORIAL_STEPS[0];
   const isLast = step >= TUTORIAL_STEPS.length - 1;
   return (
@@ -1477,17 +1540,31 @@ function TutorialOverlay({ step, onNext, onBack, onSkip }) {
         <div className="muted mono" style={{ fontSize: 12, marginBottom: 8 }}>Feature tour · {step + 1} of {TUTORIAL_STEPS.length}</div>
         <h2 id="tutorial-title" className="heading" style={{ margin: "0 0 8px" }}>{current.title}</h2>
         <p className="muted" style={{ fontSize: 16 }}>{current.body}</p>
-        <TutorialMock demo={current.demo} />
+        <TutorialMock demo={current.demo} profile={studyAreaProfile(studyContext)} />
         <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 20 }}>
           <button className="btn ghost" onClick={onSkip}>Skip</button>
           <div style={{ display: "flex", gap: 10 }}>
             {step > 0 && <button className="btn secondary" onClick={onBack}>Back</button>}
-            <button className="btn" onClick={onNext}>{isLast ? "Done" : "Next"}</button>
+            <button className="btn" onClick={current.action === "create" ? onCreateModule : onNext}>{current.action === "create" ? "Create my module" : isLast ? "Done" : "Next"}</button>
           </div>
         </div>
       </div>
     </div>
   );
+}
+
+function PomodoroTimer() {
+  const [mode, setMode] = useState("focus");
+  const [seconds, setSeconds] = useState(25 * 60);
+  const [running, setRunning] = useState(false);
+  useEffect(() => {
+    if (!running || seconds <= 0) return undefined;
+    const timer = setInterval(() => setSeconds((value) => Math.max(0, value - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [running, seconds]);
+  useEffect(() => { if (seconds === 0) setRunning(false); }, [seconds]);
+  const chooseMode = (next) => { setMode(next); setSeconds(next === "focus" ? 25 * 60 : 5 * 60); setRunning(false); };
+  return <section className="pomodoro card" aria-label="Pomodoro timer"><div><span className="muted mono">{mode === "focus" ? "FOCUS" : "BREAK"}</span><strong role="timer">{String(Math.floor(seconds / 60)).padStart(2, "0")}:{String(seconds % 60).padStart(2, "0")}</strong></div><div className="pomodoro-actions"><button className="btn secondary" onClick={() => chooseMode("focus")}>25 min focus</button><button className="btn secondary" onClick={() => chooseMode("break")}>5 min break</button><button className="btn" onClick={() => setRunning((value) => !value)}>{running ? "Pause" : seconds === 0 ? "Restart" : "Start"}</button></div></section>;
 }
 
 function Dashboard({
@@ -1496,7 +1573,7 @@ function Dashboard({
   onCreateModule, onRenameModule, onDeleteModule,
   onRenameSubject, onDeleteSubject, onMoveSubject,
   dueItems = [], sessionMinutes = 30, onStartDue,
-  deadlinePlan = [], onManageAssessments,
+  deadlinePlan = [], onManageAssessments, studyStreak = {},
 }) {
   const isEmpty = subjects.length === 0;
   const [search, setSearch] = useState("");
@@ -1516,6 +1593,10 @@ function Dashboard({
             <button className="btn" data-tour="addModule" onClick={onAddSubject}>Create Module</button>
           </div>
         </header>
+        <div className="dashboard-tools">
+          <section className="card streak-card"><span aria-hidden="true">🔥</span><div><strong>{studyStreak.current || 0}-day study streak</strong><small className="muted">Longest: {studyStreak.longest || 0} days · Complete a question or lesson today to continue it.</small></div></section>
+          <PomodoroTimer />
+        </div>
 
         {!isEmpty && (
           <section className="card" style={{ padding: 22, marginBottom: 24 }} aria-labelledby="study-today-title">
@@ -1579,7 +1660,20 @@ function SubjectGrid({ subjects, modules, onOpenSubject, onMoveSubject, onRename
   );
 }
 
-function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartModuleExam, onReviewWeak, onAddModuleFiles, onAskNotes, onMarkIndependent, onSaveCurriculum, loading, loadingMsg, showToast }) {
+function SupplementaryReadingPanel({ reading, loading, onFind }) {
+  return <details className="card module-reading-panel" style={{ padding: 20, marginBottom: 24 }}>
+    <summary><strong className="heading">Find supplementary reading</strong><span className="muted">Papers, chapters, discoveries and academic news</span></summary>
+    <div style={{ marginTop: 16 }}>
+      <p className="muted">Searches the web for reputable material tied to this module’s generated topics. Results supplement your lectures; they do not redefine the examinable syllabus.</p>
+      <button className="btn secondary" onClick={() => onFind(Boolean(reading))} disabled={loading}>{loading ? "Searching reputable sources…" : reading ? "Refresh reading list" : "Find reading"}</button>
+      {reading?.text && <div className="supplementary-reading-content"><MathRenderer text={reading.text} /></div>}
+      {reading?.sources?.length > 0 && <div className="web-sources"><strong>Sources</strong><ul>{reading.sources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul></div>}
+      {reading?.updatedAt && <small className="muted">Updated {new Date(reading.updatedAt).toLocaleString()}</small>}
+    </div>
+  </details>;
+}
+
+function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartModuleExam, onReviewWeak, onAddModuleFiles, onAskNotes, onMarkIndependent, onSaveCurriculum, onFindReading, supplementaryReading, loading, loadingMsg, showToast }) {
   const [notesFiles, setNotesFiles] = useState([]);
   const [examFiles, setExamFiles] = useState([]);
   const allTopics = subject.meta?.curriculum?.topics || [];
@@ -1672,6 +1766,8 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
           </div>
         </details>
 
+        <SupplementaryReadingPanel reading={supplementaryReading} loading={loading} onFind={(refresh) => onFindReading(subject, refresh)} />
+
         {reorganising ? (
           <section className="card curriculum-editor" style={{ padding: 20 }}>
             <h2 className="heading" style={{ marginTop: 0 }}>Reorganise module</h2>
@@ -1741,8 +1837,9 @@ function SubjectView({ subject, lessonStatus, onBack, onStartSubtopic, onStartMo
   );
 }
 
-function NotesAssistant({ subject, lessonScope, messages, onBack, onAsk, onClear, loading }) {
+function NotesAssistant({ subject, lessonScope, messages, onBack, onAsk, onClear, loading, studyContext = "" }) {
   const [question, setQuestion] = useState("");
+  const exampleQuestion = studyAreaProfile(studyContext).question;
   const submit = async (event) => {
     event.preventDefault();
     const value = question.trim();
@@ -1781,7 +1878,7 @@ function NotesAssistant({ subject, lessonScope, messages, onBack, onAsk, onClear
 
         <form className="notes-question-form" onSubmit={submit}>
           <label htmlFor="notes-question">Question about your notes</label>
-          <textarea id="notes-question" className="input" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="e.g. Why does this derivation assume steady-state conditions?" rows="3" />
+          <textarea id="notes-question" className="input" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={`e.g. ${exampleQuestion}`} rows="3" />
           <button className="btn" disabled={!question.trim() || loading}>Ask your notes</button>
         </form>
       </div>
@@ -1792,10 +1889,10 @@ function NotesAssistant({ subject, lessonScope, messages, onBack, onAsk, onClear
 function AssessmentGradeEditor({ assessment, onUpdate, showGrades }) {
   const [weight, setWeight] = useState(assessment.weightPercent ?? "");
   const [grade, setGrade] = useState(assessment.gradePercent ?? "");
-  return <div className="grade-entry"><label>Worth (%)<input className="input" type="number" min="0" max="100" step="0.1" value={weight} onChange={(event) => setWeight(event.target.value)} placeholder="e.g. 20" /></label><label>Grade (%){showGrades ? <input className="input" type="number" min="0" max="100" step="0.1" value={grade} onChange={(event) => setGrade(event.target.value)} placeholder={assessment.status === "completed" ? "Pending" : "Add later"} /> : <span className="input grade-hidden">•••</span>}</label><button className="btn secondary" onClick={() => onUpdate(assessment, { weightPercent: weight === "" ? null : Math.max(0, Math.min(100, Number(weight))), gradePercent: grade === "" ? null : Math.max(0, Math.min(100, Number(grade))), gradeUpdatedAt: Date.now() })}>{showGrades ? "Save grade" : "Save weight"}</button></div>;
+  return <div className="grade-entry"><label>Worth (%)<input className="input" type="number" min="0" max="100" step="0.1" value={weight} onChange={(event) => setWeight(event.target.value)} placeholder="e.g. 20" /></label><label>Grade (%)<input className="input" type="number" min="0" max="100" step="0.1" value={grade} onChange={(event) => setGrade(event.target.value)} placeholder={assessment.status === "completed" ? "Pending" : "Add later"} /></label><button className="btn secondary" onClick={() => onUpdate(assessment, { weightPercent: weight === "" ? null : Math.max(0, Math.min(100, Number(weight))), gradePercent: grade === "" ? null : Math.max(0, Math.min(100, Number(grade))), gradeUpdatedAt: Date.now() })}>Save grade details</button></div>;
 }
 
-function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, onToggleComplete, onUpdate, loading }) {
+function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, onToggleComplete, onUpdate, loading, gpaScale = 4.2, onGpaScaleChange, studyContext = "" }) {
   const [subjectId, setSubjectId] = useState(subjects[0]?.id || "");
   const [title, setTitle] = useState("");
   const [type, setType] = useState("exam");
@@ -1810,7 +1907,8 @@ function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, on
   const topics = subject?.meta?.curriculum?.topics || [];
   const lessons = topics.flatMap((topic) => (topic.subtopics || []).map((subtopic) => ({ ...subtopic, topicName: topic.name })));
   const selectedValues = (event) => [...event.target.selectedOptions].map((option) => option.value);
-  const grades = buildGradeSummary(subjects, assessments);
+  const grades = buildGradeSummary(subjects, assessments, gpaScale);
+  const profile = studyAreaProfile(studyContext);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -1821,8 +1919,8 @@ function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, on
 
   return <div className="app-shell"><div className="container">
     <button className="btn ghost" onClick={onBack}>Back to dashboard</button>
-    <header className="grades-header"><div><h1 className="heading" style={{ marginBottom: 6 }}>Deadlines &amp; Grades</h1><p className="muted">Plan upcoming work, record results when they arrive, and track weighted performance.</p></div><button className="btn secondary" onClick={() => setShowGrades((value) => !value)}>{showGrades ? "Hide grades" : "Show grades"}</button></header>
-    <section className="grade-summary-grid"><div className="card grade-summary-card"><span>Overall average</span><strong>{showGrades && grades.overallAverage !== null ? `${grades.overallAverage.toFixed(1)}%` : "•••"}</strong><small>{grades.modules.length ? `${grades.modules.length} graded module${grades.modules.length === 1 ? "" : "s"}` : "No grades recorded yet"}</small></div><div className="card grade-summary-card"><span>Estimated 4.0 GPA</span><strong>{showGrades && grades.estimatedGpa !== null ? grades.estimatedGpa.toFixed(2) : "•••"}</strong><small>Approximation from overall percentage</small></div>{grades.modules.map((item) => <div className="card grade-summary-card" key={item.subject.id}><span>{item.subject.meta?.name || "Module"}</span><strong>{showGrades ? `${item.average.toFixed(1)}%` : "•••"}</strong><small>{item.weightCompleted.toFixed(1)}% of module weight graded</small></div>)}</section>
+    <header className="grades-header"><div><h1 className="heading" style={{ marginBottom: 6 }}>Deadlines &amp; Grades</h1><p className="muted">Plan upcoming work, record results when they arrive, and track weighted performance.</p></div><div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><select className="input compact-select" aria-label="GPA scale" value={gpaScale} onChange={(event) => onGpaScaleChange?.(Number(event.target.value))}><option value="4.2">4.2 GPA scale</option><option value="4">4.0 GPA scale</option></select><button className="btn secondary" onClick={() => setShowGrades((value) => !value)}>{showGrades ? "Hide grade summaries" : "Show grade summaries"}</button></div></header>
+    <section className="grade-summary-grid"><div className="card grade-summary-card"><span>Overall average</span><strong>{showGrades && grades.overallAverage !== null ? `${grades.overallAverage.toFixed(1)}%` : "•••"}</strong><small>{grades.modules.length ? `${grades.modules.length} graded module${grades.modules.length === 1 ? "" : "s"}` : "No grades recorded yet"}</small></div><div className="card grade-summary-card"><span>Estimated {grades.gpaScale.toFixed(1)} GPA</span><strong>{showGrades && grades.estimatedGpa !== null ? grades.estimatedGpa.toFixed(2) : "•••"}</strong><small>Approximation from overall percentage</small></div>{grades.modules.map((item) => <div className="card grade-summary-card" key={item.subject.id}><span>{item.subject.meta?.name || "Module"}</span><strong>{showGrades ? `${item.average.toFixed(1)}%` : "•••"}</strong><small>{item.weightCompleted.toFixed(1)}% of module weight graded</small></div>)}</section>
     <p className="muted" style={{ fontSize: 12 }}>Module averages use assessments with both a grade and weighting. The overall average gives each graded module equal weight. GPA is an estimate because university conversion systems vary.</p>
     <div className="assessment-layout">
       <form className="card assessment-form" onSubmit={submit}>
@@ -1834,7 +1932,7 @@ function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, on
         <label className="check-row"><input type="checkbox" checked={fullModule} onChange={(event) => setFullModule(event.target.checked)} /> Full module</label>
         {!fullModule && <><label htmlFor="assessment-topics">Generated topics <span className="muted">(Ctrl/Cmd-click to select several)</span></label><select id="assessment-topics" className="input multi-select" multiple value={topicIds} onChange={(event) => setTopicIds(selectedValues(event))}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.name}</option>)}</select>
         <label htmlFor="assessment-lessons">Generated lessons <span className="muted">(optional, multiple allowed)</span></label><select id="assessment-lessons" className="input multi-select" multiple value={subtopicIds} onChange={(event) => setSubtopicIds(selectedValues(event))}>{lessons.map((lesson) => <option key={lesson.id} value={lesson.id}>{lesson.topicName} — {lesson.name}</option>)}</select>
-        <label htmlFor="custom-scope">Or describe the scope in your own words</label><textarea id="custom-scope" className="input" rows="3" value={customScope} onChange={(event) => setCustomScope(event.target.value)} placeholder="e.g. Everything from Fourier series through frequency response, excluding filters" /><p className="muted" style={{ fontSize: 13 }}>StudyLoop will map this description to the closest uploaded topics and lessons for you to review.</p></>}
+        <label htmlFor="custom-scope">Or describe the scope in your own words</label><textarea id="custom-scope" className="input" rows="3" value={customScope} onChange={(event) => setCustomScope(event.target.value)} placeholder={`e.g. ${profile.topic} and its applications, excluding the final optional lecture`} /><p className="muted" style={{ fontSize: 13 }}>StudyLoop will map this description to the closest uploaded topics and lessons for you to review.</p></>}
         <button className="btn" disabled={loading || !subjectId || !title.trim() || !dueAt || (!fullModule && !topicIds.length && !subtopicIds.length && !customScope.trim())}>{loading ? "Mapping scope…" : "Add deadline"}</button>
       </form>
       <section className="assessment-list"><h2 className="heading">Assessments</h2>{!assessments.length ? <div className="card" style={{ padding: 22 }}><p className="muted">No deadlines or grades added yet.</p></div> : [...assessments].sort((a, b) => (a.status === "completed") - (b.status === "completed") || a.dueAt - b.dueAt).map((assessment) => { const module = subjects.find((item) => item.id === assessment.subjectId); return <article className={`card assessment-card ${assessment.status === "completed" ? "completed" : ""}`} key={assessment.id}><div className="assessment-details"><div><span className={`assessment-type ${assessment.type}`}>{assessment.type}</span><h3 className="heading">{assessment.title}</h3><p className="muted">{module?.meta?.name} · {new Date(assessment.dueAt).toLocaleString()}</p><p>{assessment.fullModule ? "Full module" : assessment.scopeLabel || `${assessment.topicIds?.length || 0} topics and ${assessment.subtopicIds?.length || 0} lessons selected`}</p>{assessment.interpretation && <p className="muted"><strong>Interpreted scope:</strong> {assessment.interpretation}</p>}</div><AssessmentGradeEditor assessment={assessment} onUpdate={onUpdate} showGrades={showGrades} /></div><div className="assessment-actions"><button className="btn secondary" onClick={() => onToggleComplete(assessment)}>{assessment.status === "completed" ? "Mark upcoming" : "Mark completed"}</button><button className="btn ghost" onClick={() => onDelete(assessment.id)}>Delete</button></div></article>; })}</section>
@@ -1842,12 +1940,13 @@ function AssessmentPlanner({ subjects, assessments, onBack, onSave, onDelete, on
   </div></div>;
 }
 
-function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
+function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast, studyContext = "" }) {
   const [name, setName] = useState("");
   const [courseCode, setCourseCode] = useState("");
   const [semester, setSemester] = useState("");
   const [notesFiles, setNotesFiles] = useState([]);
   const [examFiles, setExamFiles] = useState([]);
+  const profile = studyAreaProfile(studyContext);
 
   const readFiles = async (files, setter, label) => {
     const next = [];
@@ -1869,10 +1968,10 @@ function AddSubject({ onBack, onCreate, loading, loadingMsg, showToast }) {
         <p className="muted">For quicker processing and fewer API limit issues, upload notes topic by topic rather than selecting a whole semester of PDFs at once.</p>
         <p className="muted">PDFs are stored on this device. Your module, lessons, questions, and progress can sync through Firestore, but source PDFs must be re-uploaded on a different device before regenerating content there.</p>
         <label className="muted" htmlFor="module-name">Module name</label>
-        <input id="module-name" className="input" data-tour="moduleName" value={name} onChange={(e) => setName(e.target.value)} style={{ margin: "8px 0 12px" }} />
+        <input id="module-name" className="input" data-tour="moduleName" value={name} onChange={(e) => setName(e.target.value)} placeholder={`e.g. ${profile.module}`} style={{ margin: "8px 0 12px" }} />
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", marginBottom: 18 }}>
-          <div><label className="muted" htmlFor="course-code">Course code</label><input id="course-code" className="input" value={courseCode} onChange={(e) => setCourseCode(e.target.value)} placeholder="e.g. ME301" /></div>
-          <div><label className="muted" htmlFor="semester">Semester / year</label><input id="semester" className="input" value={semester} onChange={(e) => setSemester(e.target.value)} placeholder="e.g. Semester 1, 2026" /></div>
+          <div><label className="muted" htmlFor="course-code">Module code <span>(optional)</span></label><input id="course-code" className="input" value={courseCode} onChange={(e) => setCourseCode(e.target.value)} placeholder="e.g. MODULE301" /></div>
+          <div><label className="muted" htmlFor="semester">Semester / year <span>(optional)</span></label><input id="semester" className="input" value={semester} onChange={(e) => setSemester(e.target.value)} placeholder="e.g. Semester 1" /></div>
         </div>
         <label className="muted" style={{ fontSize: 13 }}>Lecture notes PDFs</label>
         <input className="input" data-tour="fileUpload" type="file" accept=".pdf" multiple onChange={(e) => readFiles(e.target.files, setNotesFiles, "Lecture notes")} style={{ margin: "8px 0 10px" }} />
@@ -2143,11 +2242,23 @@ function LearnView({
   onAskNotes, onEnhanceVisuals,
   studentAnswer, setStudentAnswer, selectedOption, setSelectedOption, feedback, loading,
   questionBank, viewingBankQuestion, onOpenBankQuestion, onCloseBankQuestion,
-  showNotesPeek, setShowNotesPeek, mistakePattern, answerConfidence, setAnswerConfidence,
+  showNotesPeek, setShowNotesPeek, mistakePattern, answerConfidence, setAnswerConfidence, lowScoreStreak = 0,
 }) {
   const q = lesson.question;
-  const inPractice = phase === "question" || phase === "bank";
+  const inPractice = phase === "question" || phase === "bank" || phase === "practiceSetup";
   const [showHint, setShowHint] = useState(false);
+  const [selectedPracticeTypes, setSelectedPracticeTypes] = useState(["all"]);
+  const [showReviewWarning, setShowReviewWarning] = useState(false);
+  const togglePracticeType = (type) => setSelectedPracticeTypes((current) => {
+    if (type === "all") return ["all"];
+    const withoutAll = current.filter((item) => item !== "all");
+    const next = withoutAll.includes(type) ? withoutAll.filter((item) => item !== type) : [...withoutAll, type];
+    return next.length ? next : ["all"];
+  });
+  const nextQuestion = () => {
+    if (lowScoreStreak >= 3) setShowReviewWarning(true);
+    else onFetchQuestion();
+  };
 
   return (
     <div className="app-shell">
@@ -2164,7 +2275,14 @@ function LearnView({
         )}
 
         {phase === "notes" ? (
-          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={onFetchQuestion} onAskNotes={onAskNotes} onEnhanceVisuals={onEnhanceVisuals} />
+          <NotePaper lesson={lesson} loading={loading} onRegenerate={onRegenerate} onPractice={() => setPhase("practiceSetup")} onAskNotes={onAskNotes} onEnhanceVisuals={onEnhanceVisuals} />
+        ) : phase === "practiceSetup" ? (
+          <section className="card practice-setup">
+            <h2 className="heading" style={{ marginTop: 0 }}>Choose your question types</h2>
+            <p className="muted">You will get a short-question set first. Once it is complete, StudyLoop automatically moves to a smaller, harder set. The number depends on the breadth and difficulty of these notes.</p>
+            <div className="question-type-picker">{PRACTICE_TYPE_OPTIONS.map((option) => <label className="check-row" key={option.id}><input type="checkbox" checked={selectedPracticeTypes.includes(option.id)} onChange={() => togglePracticeType(option.id)} /><span>{option.label}</span></label>)}</div>
+            <button className="btn" onClick={() => onFetchQuestion({ types: normalizePracticeTypes(selectedPracticeTypes), stage: "short", reset: true })} disabled={loading}>Start short questions</button>
+          </section>
         ) : phase === "bank" ? (
           viewingBankQuestion ? (
             <div className="card" style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
@@ -2212,17 +2330,15 @@ function LearnView({
             ) : (
               <div className="card" style={{ padding: 18, marginTop: 18, background: "var(--surface-2)" }}>
                 <strong>{feedback.correct ? "Correct" : `Partial credit: ${feedback.partial_credit_percent}%`}</strong>
-                <p>{feedback.feedback}</p>
+                <MathRenderer text={feedback.feedback} />
                 <ConfidenceFeedback feedback={feedback} />
-                {feedback.misconception && <p className="muted"><strong>Misconception:</strong> {feedback.misconception}</p>}
-                {feedback.what_to_review && <p className="muted"><strong>Review:</strong> {feedback.what_to_review}</p>}
+                {feedback.misconception && <div className="muted"><strong>Misconception:</strong> <MathRenderer text={feedback.misconception} /></div>}
+                {feedback.what_to_review && <div className="muted"><strong>Review:</strong> <MathRenderer text={feedback.what_to_review} /></div>}
                 {feedback.calculation_check && <p className={feedback.calculation_check.matches ? "calculation-match" : "calculation-mismatch"}><strong>Calculator check:</strong> {feedback.calculation_check.message}</p>}
                 <VerifiedCalculations calculations={q.verified_calculations} />
                 {feedback.rubric_results?.length > 0 && <div className="rubric"><strong>Mark breakdown</strong>{feedback.rubric_results.map((item, index) => <div key={index}><span>{item.criterion}</span><span>{item.marks_awarded}/{item.marks_available}</span></div>)}</div>}
                 {mistakePattern && <p style={{ color: "var(--warning)" }}>{mistakePattern}</p>}
-                <button className="btn" onClick={() => (feedback.correct || feedback.partial_credit_percent >= 80 ? onFetchQuestion() : setPhase("notes"))}>
-                  {feedback.correct || feedback.partial_credit_percent >= 80 ? "Try another question" : "Review the lesson again"}
-                </button>
+                {showReviewWarning ? <div className="review-warning"><strong>Three difficult attempts in a row</strong><p>Continuing is allowed, but reviewing the relevant note section now is likely to be more useful than guessing through another question.</p><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button className="btn secondary" onClick={() => setPhase("notes")}>Review notes</button><button className="btn" onClick={() => { setShowReviewWarning(false); onFetchQuestion(); }}>Continue anyway</button></div></div> : <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button className="btn" onClick={nextQuestion}>Next question</button><button className="btn secondary" onClick={() => setPhase("notes")}>Review notes</button></div>}
               </div>
             )}
           </div>
@@ -2306,10 +2422,10 @@ function TopicExamView({
               ) : (!timed || examSubmitted) ? (
                 <div className="card" style={{ padding: 18, marginTop: 18, background: "var(--surface-2)" }}>
                   <strong>{feedback.correct ? "Correct" : `Partial credit: ${feedback.partial_credit_percent}%`}</strong>
-                  <p>{feedback.feedback}</p>
+                  <MathRenderer text={feedback.feedback} />
                   <ConfidenceFeedback feedback={feedback} />
-                  {feedback.misconception && <p className="muted"><strong>Misconception:</strong> {feedback.misconception}</p>}
-                  {feedback.what_to_review && <p className="muted"><strong>Review:</strong> {feedback.what_to_review}</p>}
+                  {feedback.misconception && <div className="muted"><strong>Misconception:</strong> <MathRenderer text={feedback.misconception} /></div>}
+                  {feedback.what_to_review && <div className="muted"><strong>Review:</strong> <MathRenderer text={feedback.what_to_review} /></div>}
                   {feedback.calculation_check && <p className={feedback.calculation_check.matches ? "calculation-match" : "calculation-mismatch"}><strong>Calculator check:</strong> {feedback.calculation_check.message}</p>}
                   <VerifiedCalculations calculations={q.verified_calculations} />
                   {feedback.rubric_results?.length > 0 && <div className="rubric"><strong>Mark breakdown</strong>{feedback.rubric_results.map((item, index) => <div key={index}><span>{item.criterion}</span><span>{item.marks_awarded}/{item.marks_available}</span></div>)}</div>}
@@ -2358,12 +2474,20 @@ function StemTutor() {
   const [notesMessages, setNotesMessages] = useState([]);
   const [notesScope, setNotesScope] = useState(null);
   const [notesReturnScreen, setNotesReturnScreen] = useState("subject");
+  const [supplementaryReading, setSupplementaryReading] = useState(null);
+  const [studyStreak, setStudyStreak] = useState({ current: 0, longest: 0, days: [] });
+  const [practiceConfig, setPracticeConfig] = useState({ types: ["all"], stage: "short" });
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [dashboardModal, setDashboardModal] = useState(null);
   const sessionPdfBytes = useRef(new Map());
   const dueItems = useMemo(() => dueSubtopics(subjects), [subjects]);
   const deadlinePlan = useMemo(() => buildDeadlinePlan(assessments, subjects, { sessionMinutes: settings.sessionMinutes || 30 }), [assessments, subjects, settings.sessionMinutes]);
+
+  useEffect(() => {
+    if (!uid) return;
+    getArtifact(uid, "studyActivity", "streak").then((stored) => setStudyStreak(normalizeStudyStreak(stored || {}))).catch(() => {});
+  }, [uid]);
 
   useEffect(() => {
     // Only pdf.js and Mermaid load from a CDN now; math/markdown rendering is bundled (see MathRenderer).
@@ -2395,7 +2519,7 @@ function StemTutor() {
       const savedApiKey = localStorage.getItem(apiKeyStorageKey(uid)) || legacySessionKey;
       if (legacySessionKey && !localStorage.getItem(apiKeyStorageKey(uid))) localStorage.setItem(apiKeyStorageKey(uid), legacySessionKey);
       sessionStorage.removeItem("stem-gemini-api-key");
-      const normalized = { studyContext: "", referralSource: "", tutorialSeen: false, studyMode: "deep", sessionMinutes: 30, ...next, geminiApiKey: savedApiKey, theme: normalizeThemeId(next.theme) };
+      const normalized = { studyContext: "", referralSource: "", tutorialSeen: false, tutorialAwaitingModule: false, studyMode: "deep", sessionMinutes: 30, gpaScale: 4.2, ...next, geminiApiKey: savedApiKey, theme: normalizeThemeId(next.theme) };
       setSettings(normalized);
       document.documentElement.dataset.theme = normalized.theme;
       setSettingsLoaded(true);
@@ -2511,10 +2635,49 @@ function StemTutor() {
     await saveSettings(uid, next);
   };
 
+  const recordLearningActivity = async () => {
+    const next = recordStudyDay(studyStreak);
+    setStudyStreak(next);
+    await saveArtifact(uid, "studyActivity", "streak", next);
+  };
+
+  const findSupplementaryReading = async (subject, refresh = false) => {
+    if (!subject) return;
+    setLoading(true);
+    setLoadingMsg("Finding reputable supplementary reading...");
+    try {
+      const key = subject.id;
+      if (!refresh) {
+        const cached = await getArtifact(uid, "supplementaryReading", key);
+        if (cached) { setSupplementaryReading(cached); return; }
+      }
+      const topics = (subject.meta?.curriculum?.topics || []).map((topic) => ({ name: topic.name, lessons: (topic.subtopics || []).map((lesson) => lesson.name) }));
+      const result = await callGemini({
+        apiKey: settings.geminiApiKey,
+        contents: [{ role: "user", parts: [{ text: `${TUTOR_VOICE_PROMPT}\n\nFind a concise, high-quality supplementary reading list for the university module "${subject.meta?.name}". Search the web before answering.\n\nModule topics:\n${JSON.stringify(topics)}\n\nInclude a balanced selection where genuinely available:\n- accessible textbook chapters, university course notes, or authoritative review chapters;\n- peer-reviewed academic papers or systematic reviews;\n- important recent discoveries or academic news from universities, scholarly societies, journals, or reputable science publications.\n\nOrganise results by generated module topic. For each recommendation state its type, level, why it is relevant, and what the student should read or look for. Prefer primary papers, universities, scholarly societies, major journals, government research bodies, and open-access material. Do not recommend generic commercial study sites, SEO content farms, or material unrelated to the listed topics. Clearly distinguish recent news from established teaching sources. Return readable Markdown.` }] }],
+        tools: [{ google_search: {} }],
+        generationConfig: { temperature: 0.15 },
+        returnCandidate: true,
+      }, { retries: 2, onStatus: setLoadingMsg });
+      const reading = { text: result.text, sources: extractWebSources(result.groundingMetadata), updatedAt: Date.now() };
+      if (!reading.sources.length) throw new Error("No verifiable reading sources were returned. Try again.");
+      setSupplementaryReading(reading);
+      await saveArtifact(uid, "supplementaryReading", key, reading);
+    } catch (error) { showToast(error.message, "error"); }
+    finally { setLoading(false); }
+  };
+
   const startDueItem = (item) => {
     if (!item) return;
     setSelectedSubject(item.subject);
     generateLesson(item.subject, item.topic, item.subtopic);
+  };
+
+  const openSubject = async (subject) => {
+    setSelectedSubject(subject);
+    setSupplementaryReading(null);
+    setScreen("subject");
+    try { setSupplementaryReading(await getArtifact(uid, "supplementaryReading", subject.id)); } catch { /* optional cache */ }
   };
 
   const downloadLearningData = async () => {
@@ -2547,15 +2710,27 @@ function StemTutor() {
 
   const startTutorial = async () => {
     setShowSettings(false);
-    setScreen("dashboard");
-    setTutorialStep(0);
-    await persistSettings({ tutorialSeen: false });
+    if (subjects.length) {
+      setSelectedSubject(subjects[0]);
+      setScreen("subject");
+      setTutorialStep(1);
+    } else {
+      setScreen("dashboard");
+      setTutorialStep(0);
+    }
+    await persistSettings({ tutorialSeen: false, tutorialAwaitingModule: false });
+  };
+
+  const beginTutorialModuleCreation = async () => {
+    setTutorialStep(null);
+    setScreen("add");
+    await persistSettings({ tutorialSeen: false, tutorialAwaitingModule: true });
   };
 
   const finishTutorial = async () => {
     setTutorialStep(null);
     setScreen("dashboard");
-    await persistSettings({ tutorialSeen: true });
+    await persistSettings({ tutorialSeen: true, tutorialAwaitingModule: false });
   };
 
   const advanceTutorial = () => {
@@ -2589,10 +2764,17 @@ function StemTutor() {
 
   useEffect(() => {
     if (settingsLoaded && settings.onboarded && !settings.tutorialSeen && tutorialStep === null && !showSettings) {
-      setScreen("dashboard");
-      setTutorialStep(0);
+      if (settings.tutorialAwaitingModule && screen === "add") return;
+      if (subjects.length) {
+        setSelectedSubject((current) => current || subjects[0]);
+        setScreen("subject");
+        setTutorialStep(1);
+      } else {
+        setScreen("dashboard");
+        setTutorialStep(0);
+      }
     }
-  }, [settingsLoaded, settings.onboarded, settings.tutorialSeen, tutorialStep, showSettings]);
+  }, [settingsLoaded, settings.onboarded, settings.tutorialSeen, settings.tutorialAwaitingModule, tutorialStep, showSettings, subjects.length]);
 
   const saveLocalCollections = (nextSubjects, nextModules = modules) => {
     localStorage.setItem("stem-subjects", JSON.stringify(nextSubjects));
@@ -2693,9 +2875,9 @@ Rules:
     let result;
     let validatedCurriculum;
     let lastError;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        if (attempt > 0) setLoadingMsg(`Checking ${file.name} again with a stricter module-map pass...`);
+        if (attempt > 0) setLoadingMsg(`The first module-map pass was incomplete. Retrying ${file.name} automatically (${attempt + 1}/3)...`);
         result = await callGeminiJSON({
           apiKey: settings.geminiApiKey,
           contents: [{ role: "user", parts: [{ text: `${prompt}${attempt > 0 ? "\n\nRETRY REQUIREMENT: The previous response failed validation. Return at least one uniquely named topic, give every topic meaningful class-sized subtopics, and exactly match the requested JSON schema." : ""}` }] }],
@@ -2708,7 +2890,7 @@ Rules:
         if (error.retryable === false) break;
       }
     }
-    if (!validatedCurriculum) throw new Error(`The module map could not be validated after a second pass. ${lastError?.message || "Please try again."}`);
+    if (!validatedCurriculum) throw new Error(`The module map could not be validated after three automatic passes. ${lastError?.message || "Please try again."}`);
     return {
       sourceIndex: result.sourceIndex,
       curriculum: hasExistingMap ? preserveCurriculumIds(existingCurriculum, validatedCurriculum) : assignIds(validatedCurriculum),
@@ -2873,6 +3055,7 @@ Return only topicGroups.`;
     const nextSubject = { ...subject, masteryLog: nextLog };
     setSelectedSubject(nextSubject);
     setSubjects((current) => current.map((item) => item.id === subject.id ? nextSubject : item));
+    if (!undo) await recordLearningActivity();
     showToast(undo ? `${subtopic.name} returned to your study plan.` : `${subtopic.name} marked as learned independently.`, "success");
   };
 
@@ -3087,6 +3270,10 @@ ${JSON.stringify(described.map(({ page, reason, description, modelUsed }) => ({ 
       }
       setSelectedSubject(subjectDoc);
       setScreen("subject");
+      if (settings.tutorialAwaitingModule) {
+        await persistSettings({ tutorialAwaitingModule: false, tutorialSeen: false });
+        setTutorialStep(1);
+      }
       showToast("Curriculum created and saved.", "success");
     } catch (err) {
       showToast(err.message, "error");
@@ -3361,16 +3548,18 @@ Quality bar:
 - Do not perform arithmetic or numerical evaluation yourself. Formulate each required equation symbolically, then add a calculation_requests entry containing the fully substituted expression for the app's deterministic calculator. The expression must be compatible with Math.js, include units where useful (for example "12 kg * 3.5 m/s^2"), and never contain an equals sign or prose. Refer to the result as calculator-verified rather than inventing a numeric result in lesson prose.
 - If the notes include multiple cases, regimes, assumptions, or common exam manipulations, cover each one.
 - Do not expand into neighbouring classes unless needed for context. Use the saved source-index context to stay inside the intended module hierarchy.
+- Wrap every inline mathematical symbol, variable, unit, chemical formula, reaction, and chemical expression in Markdown LaTeX delimiters. Do not leave mathematical or chemical notation as unformatted plain text.
 
 Before returning, silently self-check every equation, claim, and worked-example step for correctness and remove filler. Return only the requested JSON.`;
-      const rawLesson = await callGeminiJSON({
-        apiKey: settings.geminiApiKey,
-        contents: [{ role: "user", parts: [{ text: draftPrompt }] }],
-        documentPart: documentContext?.documentPart,
-        generationConfig: { temperature: 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
-      }, { onStatus: setLoadingMsg, label: "lesson draft response" });
-
-      const finalLesson = validateLesson(rawLesson, documentContext?.pages || []);
+      const finalLesson = await runReliableTask(async (attempt) => {
+        const rawLesson = await callGeminiJSON({
+          apiKey: settings.geminiApiKey,
+          contents: [{ role: "user", parts: [{ text: `${draftPrompt}${attempt > 1 ? "\n\nRETRY REQUIREMENT: The previous lesson failed structural validation. Preserve source coverage but strictly follow every required JSON field and return a complete lesson." : ""}` }] }],
+          documentPart: documentContext?.documentPart,
+          generationConfig: { temperature: attempt > 1 ? 0.1 : 0.25, responseMimeType: "application/json", responseSchema: LESSON_SCHEMA_V2 },
+        }, { onStatus: setLoadingMsg, label: "lesson draft response" });
+        return validateLesson(rawLesson, documentContext?.pages || []);
+      }, { attempts: 2, onStatus: setLoadingMsg, label: "Note generation" });
       finalLesson.verified_calculations = verifyCalculationRequests(finalLesson.calculation_requests);
       const recognizedCoreVisuals = await recognizeCoreVisualsFromSourcePages(finalLesson, documentContext, subtopic);
       finalLesson.chemical_structures = [...(finalLesson.chemical_structures || []), ...recognizedCoreVisuals.chemical_structures];
@@ -3419,7 +3608,7 @@ Before returning, silently self-check every equation, claim, and worked-example 
     }
   };
 
-  const fetchQuestion = async () => {
+  const fetchQuestion = async (requestedConfig = null) => {
     if (!selectedSubject || !active) return;
     setLoading(true);
     setLoadingMsg("Writing practice questions...");
@@ -3433,7 +3622,18 @@ Before returning, silently self-check every equation, claim, and worked-example 
         bank = bankSnap.exists() ? bankSnap.data().questions || [] : [];
       } else bank = await getArtifact(uid, "questionBank", key) || [];
       setQuestionBank(bank);
-      const unseen = bank.find((question) => !question.attempts?.length);
+      let activeConfig = requestedConfig?.types ? { types: normalizePracticeTypes(requestedConfig.types), stage: requestedConfig.stage || "short" } : practiceConfig;
+      let typePlan = questionTypeInstructions(activeConfig.types, activeConfig.stage);
+      let stageQuestions = bank.filter((question) => (question.practiceStage || "legacy") === activeConfig.stage && (!question.practiceSelection || JSON.stringify(question.practiceSelection) === JSON.stringify(activeConfig.types)));
+      let unseen = stageQuestions.find((question) => !question.attempts?.length && typePlan.allowedTypes.includes(question.type));
+      if (!unseen && activeConfig.stage === "short" && stageQuestions.length && stageQuestions.every((question) => question.attempts?.length)) {
+        activeConfig = { ...activeConfig, stage: "hard" };
+        typePlan = questionTypeInstructions(activeConfig.types, "hard");
+        stageQuestions = bank.filter((question) => question.practiceStage === "hard" && (!question.practiceSelection || JSON.stringify(question.practiceSelection) === JSON.stringify(activeConfig.types)));
+        unseen = stageQuestions.find((question) => !question.attempts?.length && typePlan.allowedTypes.includes(question.type));
+        showToast("Short checks complete. Moving to the harder question set.", "success");
+      }
+      setPracticeConfig(activeConfig);
       if (unseen) {
         setLesson((prev) => ({ ...prev, question: unseen }));
         setStudentAnswer("");
@@ -3445,15 +3645,13 @@ Before returning, silently self-check every equation, claim, and worked-example 
         return;
       }
       const plan = await ensureExamPlan(selectedSubject);
-      const chosenType = pickWeighted(plan.question_types, "weight_percent");
-      const followUpType = chosenType.type === "multiple_choice"
-        ? { type: "short_answer", avg_marks: 5, style_notes: "Concise written answer that checks understanding beyond recognition." }
-        : chosenType;
+      const chosenType = pickWeighted(plan.question_types.filter((item) => typePlan.allowedTypes.includes(item.type)).length ? plan.question_types.filter((item) => typePlan.allowedTypes.includes(item.type)) : typePlan.allowedTypes.map((type) => ({ type, weight_percent: 1, avg_marks: type === "long_answer" || type === "derivation" ? 10 : 4 })), "weight_percent");
       const documentPart = await getDocumentPart(selectedSubject, { queryText: `${active.topic.name} ${active.subtopic.name}`, scoped: true });
       const adaptiveDifficulty = computeAdaptiveDifficulty(active.subtopic.difficulty, bank);
+      const batchSize = questionCountForLesson(lesson, active.subtopic.difficulty, activeConfig.stage);
       const prompt = `${moduleBoundaryText(selectedSubject)}
 
-Write ${QUESTION_BATCH_SIZE} DISTINCT check-up questions on the class "${active.subtopic.name}" inside the topic "${active.topic.name}" for the module "${selectedSubject.meta.name}", each testing a different angle of this class so they don't feel repetitive.
+Write ${batchSize} DISTINCT ${activeConfig.stage === "short" ? "short, focused check-up" : "harder application and synthesis"} questions on the class "${active.subtopic.name}" inside the topic "${active.topic.name}" for the module "${selectedSubject.meta.name}", each testing a different angle.
 
 These are lesson-level check-up questions, not full module exam questions. They may be challenging, but every required fact, step, definition, assumption, example, or equation must be taught in the attached scoped lecture-note pages for this specific class. Do not ask synthesis questions that require later classes or the whole topic unless the attached class notes explicitly cover that synthesis.
 
@@ -3462,16 +3660,17 @@ Calibrate scope:
 - If this class contains derivations, cases, or worked examples, ask deeper questions that mirror those exact class materials.
 - If a question would require content from neighbouring classes, do not generate it for this lesson.
 
-Question 1 must be multiple_choice. Make it a useful starter question that checks a core definition, assumption, equation meaning, concept distinction, or common misconception from the notes. Include exactly 4 plausible answer choices in options and put the exact correct answer choice text in correct_option.
+Allowed question schema types for this set: ${typePlan.allowedTypes.join(", ")}. Use only these types. The student's selection was ${activeConfig.types.join(", ")}.
+${typePlan.needsExamStyle ? `Use wording, command verbs, structure, and mark expectations from the uploaded assessment blueprint where applicable: ${plan.overall_notes || "university exam style"}.` : "Keep the wording direct and diagnostic rather than imitating a full exam."}
+${typePlan.needsImage ? "Every question must use an applicable verified technical visual or graph from this lesson. If no verified visual is available, return fewer questions rather than inventing one." : "Use a visual only when it genuinely tests visual interpretation."}
+${activeConfig.stage === "short" ? "Keep answers concise: definitions, distinctions, single mechanisms, brief explanations, or one-step applications." : "Require deeper explanation, multi-step reasoning, transfer, derivation, or exam-style application while staying inside the attached lesson."}
 
 Multiple-choice formatting rules:
 - options must contain four actual student-facing answer choices, not numbers, letters, JSON keys, field names, labels, or placeholders.
 - Never use words like "correct_option", "difficulty", "mark", "marks", "hint", "question", "type", "1", or "2" as answer choices.
 - correct_option must exactly equal one of the four strings in options.
 
-Question 2 type: ${followUpType.type}. Style guidance from the real past papers: ${followUpType.style_notes || plan.overall_notes || "standard exam phrasing"}.
-Difficulty: ${adaptiveDifficulty}/5.
-Marks: around ${followUpType.avg_marks || 5}.
+Suggested dominant type: ${chosenType.type}. Difficulty: ${Math.min(5, adaptiveDifficulty + (activeConfig.stage === "hard" ? 1 : 0))}/5. Typical marks: around ${chosenType.avg_marks || (activeConfig.stage === "hard" ? 10 : 4)}.
 
 Verified core technical visuals available for this lesson:
 ${JSON.stringify((lesson?.technical_visuals || []).map(({ id, kind, title, cid, smiles, formula, components, purpose }) => ({ id, kind, title, cid, smiles, formula, components, purpose })))}
@@ -3493,19 +3692,35 @@ Calculation rules:
 - The modelAnswer should explain formula selection and substitution, but refer to the final value as the calculator-verified result.
 - If the question is conceptual or purely explanatory, set requires_calculation to false and use an empty calculation_requests array.
 
-Return exactly ${QUESTION_BATCH_SIZE} questions under a "questions" array, in the requested order.`;
-      const parsed = await callGeminiJSON({
+Return exactly ${batchSize} questions under a "questions" array, in the requested order.`;
+      const parsed = await runReliableTask(() => callGeminiJSON({
         apiKey: settings.geminiApiKey,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         documentPart,
-        generationConfig: { temperature: 0.4, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
-      }, { onStatus: setLoadingMsg, label: "practice question response" });
-      let newQuestions = normalizeQuestionBatch(parsed.questions, { expectedCount: QUESTION_BATCH_SIZE })
+        generationConfig: { temperature: 0.35, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
+      }, { onStatus: setLoadingMsg, label: "practice question response" }), { attempts: 2, onStatus: setLoadingMsg, label: "Question generation" });
+      let newQuestions = normalizeQuestionBatch(parsed.questions, { expectedCount: batchSize })
         .map((qItem) => verifyVisualQuestionAgainstAssets(qItem, lesson?.technical_visuals || []))
-        .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now() }));
+        .filter((qItem) => typePlan.allowedTypes.includes(qItem.type))
+        .filter((qItem) => !typePlan.needsImage || qItem.visual_question || qItem.technical_visual_ids?.length)
+        .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types }));
+      if (!newQuestions.length) {
+        setLoadingMsg("The first question set was malformed. Rebuilding it automatically...");
+        const retryParsed = await callGeminiJSON({
+          apiKey: settings.geminiApiKey,
+          contents: [{ role: "user", parts: [{ text: `${prompt}\n\nRETRY REQUIREMENT: The previous set failed structural validation. Return valid, fully formed questions using only ${typePlan.allowedTypes.join(", ")}. Multiple-choice questions require exactly four real options and an exact matching correct_option.` }] }],
+          documentPart,
+          generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: QUESTION_BATCH_SCHEMA },
+        }, { onStatus: setLoadingMsg, label: "question validation retry" });
+        newQuestions = normalizeQuestionBatch(retryParsed.questions, { expectedCount: batchSize })
+          .map((qItem) => verifyVisualQuestionAgainstAssets(qItem, lesson?.technical_visuals || []))
+          .filter((qItem) => typePlan.allowedTypes.includes(qItem.type))
+          .filter((qItem) => !typePlan.needsImage || qItem.visual_question || qItem.technical_visual_ids?.length)
+          .map((qItem) => ({ ...qItem, id: crypto.randomUUID(), attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types }));
+      }
       if (lesson?.graphs?.length) {
         const graphQuestion = validateQuestion(buildGraphQuestion(lesson.graphs[Math.floor(Math.random() * lesson.graphs.length)], crypto.randomUUID()));
-        newQuestions = [newQuestions[0], { ...graphQuestion, attempts: [], createdAt: Date.now() }].filter(Boolean).slice(0, QUESTION_BATCH_SIZE);
+        if (typePlan.needsImage || activeConfig.types.includes("all")) newQuestions = [newQuestions[0], { ...graphQuestion, attempts: [], createdAt: Date.now(), practiceStage: activeConfig.stage, practiceSelection: activeConfig.types }, ...newQuestions.slice(1)].filter(Boolean).slice(0, batchSize);
       }
       if (!newQuestions.length) throw new Error("The AI didn't return any questions. Try again.");
       const nextBank = [...bank, ...newQuestions];
@@ -3709,6 +3924,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
       setTopicExam(nextExam);
       setTopicExamQuestion(nextQuestions.find((question) => question.id === q.id));
       setFeedback(parsed);
+      await recordLearningActivity();
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -3823,6 +4039,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
       setFeedback(parsed);
       setLesson((prev) => ({ ...prev, question: appendAttempt(q, attempt) }));
       await updateMastery(parsed);
+      await recordLearningActivity();
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -3999,7 +4216,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
             subjects={subjects}
             modules={modules}
             onAddSubject={() => setScreen("add")}
-            onOpenSubject={(subject) => { setSelectedSubject(subject); setScreen("subject"); }}
+            onOpenSubject={openSubject}
             onCreateModule={() => setDashboardModal({ kind: "createModule" })}
             onRenameModule={(module) => setDashboardModal({ kind: "renameModule", module })}
             onDeleteModule={(module) => setDashboardModal({ kind: "deleteModule", module })}
@@ -4012,12 +4229,13 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
             onStartDue={startDueItem}
             deadlinePlan={deadlinePlan}
             onManageAssessments={() => setScreen("assessments")}
+            studyStreak={studyStreak}
           />
         </>
       ) : screen === "assessments" ? (
-        <AssessmentPlanner subjects={subjects} assessments={assessments} onBack={() => setScreen("dashboard")} onSave={saveAssessment} onDelete={deleteAssessment} onToggleComplete={toggleAssessmentComplete} onUpdate={updateAssessment} loading={loading} />
+        <AssessmentPlanner subjects={subjects} assessments={assessments} onBack={() => setScreen("dashboard")} onSave={saveAssessment} onDelete={deleteAssessment} onToggleComplete={toggleAssessmentComplete} onUpdate={updateAssessment} loading={loading} gpaScale={settings.gpaScale || 4.2} onGpaScaleChange={(gpaScale) => persistSettings({ gpaScale })} studyContext={settings.studyContext} />
       ) : screen === "add" ? (
-        <AddSubject onBack={() => setScreen("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} />
+        <AddSubject onBack={() => setScreen("dashboard")} onCreate={buildCurriculum} loading={loading} loadingMsg={loadingMsg} showToast={showToast} studyContext={settings.studyContext} />
       ) : screen === "subject" && selectedSubject ? (
         <SubjectView
           subject={selectedSubject}
@@ -4030,12 +4248,14 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onAskNotes={() => openNotesAssistant(selectedSubject)}
           onMarkIndependent={(subtopic) => markLessonIndependent(selectedSubject, subtopic)}
           onSaveCurriculum={(curriculum) => saveCurriculumOrganisation(selectedSubject, curriculum)}
+          onFindReading={findSupplementaryReading}
+          supplementaryReading={supplementaryReading}
           loading={loading}
           loadingMsg={loadingMsg}
           showToast={showToast}
         />
       ) : screen === "notesAssistant" && selectedSubject ? (
-        <NotesAssistant subject={selectedSubject} lessonScope={notesScope} messages={notesMessages} onBack={() => setScreen(notesReturnScreen)} onAsk={askNotes} onClear={clearNotesAssistant} loading={loading} />
+        <NotesAssistant subject={selectedSubject} lessonScope={notesScope} messages={notesMessages} onBack={() => setScreen(notesReturnScreen)} onAsk={askNotes} onClear={clearNotesAssistant} loading={loading} studyContext={settings.studyContext} />
       ) : screen === "learn" && selectedSubject && active && lesson ? (
         <LearnView
           subject={selectedSubject}
@@ -4064,6 +4284,7 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           mistakePattern={mistakePattern}
           answerConfidence={answerConfidence}
           setAnswerConfidence={setAnswerConfidence}
+          lowScoreStreak={recentLowScoreStreak(questionBank)}
         />
       ) : screen === "topicExam" && selectedSubject && activeTopicExam ? (
         <TopicExamView
@@ -4092,6 +4313,8 @@ Give partial credit where deserved. Identify misconceptions, classify the mistak
           onNext={advanceTutorial}
           onBack={goBackTutorial}
           onSkip={finishTutorial}
+          onCreateModule={beginTutorialModuleCreation}
+          studyContext={settings.studyContext}
         />
       )}
 

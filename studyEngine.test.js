@@ -37,4 +37,10 @@ describe("spaced review scheduling", () => {
     expect(plan[0].remaining.map((item) => item.subtopic.id)).toEqual(["s2"]);
     expect(plan.reduce((sum, item) => sum + item.todayMinutes, 0)).toBe(30);
   });
+  it("hides distant low-work deadlines from the dashboard", () => {
+    const now = 1_000_000;
+    const subject = { id: "module", meta: { curriculum: { topics: [{ id: "t1", subtopics: [{ id: "s1", estimatedMinutes: 20 }] }] } }, masteryLog: {} };
+    const plan = buildDeadlinePlan([{ id: "distant", subjectId: "module", title: "Final", dueAt: now + 45 * 86_400_000, fullModule: true }], [subject], { now, sessionMinutes: 30 });
+    expect(plan).toEqual([]);
+  });
 });

@@ -11,24 +11,25 @@ export function weightedAverage(assessments = []) {
   };
 }
 
-export function percentToGpa(percent) {
-  if (!Number.isFinite(Number(percent))) return null;
+export function percentToGpa(percent, scale = 4.2) {
+  if (percent === "" || percent === null || percent === undefined || !Number.isFinite(Number(percent))) return null;
   const value = Number(percent);
-  if (value >= 90) return 4;
-  if (value >= 85) return 3.7;
-  if (value >= 80) return 3.3;
-  if (value >= 75) return 3;
-  if (value >= 70) return 2.7;
-  if (value >= 65) return 2.3;
-  if (value >= 60) return 2;
-  if (value >= 55) return 1.7;
-  if (value >= 50) return 1.3;
+  const fourPointTwo = Number(scale) === 4.2;
+  if (value >= 90) return fourPointTwo ? 4.2 : 4;
+  if (value >= 85) return fourPointTwo ? 4 : 3.7;
+  if (value >= 80) return fourPointTwo ? 3.7 : 3.3;
+  if (value >= 75) return fourPointTwo ? 3.3 : 3;
+  if (value >= 70) return fourPointTwo ? 3 : 2.7;
+  if (value >= 65) return fourPointTwo ? 2.7 : 2.3;
+  if (value >= 60) return fourPointTwo ? 2.3 : 2;
+  if (value >= 55) return fourPointTwo ? 2 : 1.7;
+  if (value >= 50) return fourPointTwo ? 1.7 : 1.3;
   if (value >= 45) return 1;
   return 0;
 }
 
-export function buildGradeSummary(subjects = [], assessments = []) {
+export function buildGradeSummary(subjects = [], assessments = [], gpaScale = 4.2) {
   const modules = subjects.map((subject) => ({ subject, ...weightedAverage(assessments.filter((item) => item.subjectId === subject.id)) })).filter((item) => item.average !== null);
   const overallAverage = modules.length ? modules.reduce((sum, item) => sum + item.average, 0) / modules.length : null;
-  return { modules, overallAverage, estimatedGpa: percentToGpa(overallAverage) };
+  return { modules, overallAverage, estimatedGpa: percentToGpa(overallAverage, gpaScale), gpaScale: Number(gpaScale) === 4 ? 4 : 4.2 };
 }

@@ -7,5 +7,9 @@ describe("gradebook calculations", () => {
     const summary = buildGradeSummary([{ id: "a" }, { id: "b" }], [{ subjectId: "a", weightPercent: 50, gradePercent: 80 }, { subjectId: "b", weightPercent: 100, gradePercent: 60 }]);
     expect(summary.overallAverage).toBe(70);
   });
-  it("provides an explicitly estimated 4.0 GPA", () => expect(percentToGpa(85)).toBe(3.7));
+  it("uses 4.2 by default and supports an optional 4.0 scale", () => {
+    expect(percentToGpa(null)).toBeNull();
+    expect(percentToGpa(90)).toBe(4.2);
+    expect(percentToGpa(85, 4)).toBe(3.7);
+  });
 });
