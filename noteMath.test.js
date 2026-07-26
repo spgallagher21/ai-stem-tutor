@@ -12,6 +12,11 @@ describe("lesson maths presentation", () => {
     expect(normalizeMathMarkdown(raw)).toBe(String.raw`Range: $0^{\circ}\text{C}$ to $\frac{100}{5}$.`);
   });
 
+  it("removes multiple JSON escape layers from delimiters and LaTeX commands", () => {
+    const raw = String.raw`Range: \\$0^{\\circ}\\text{C}\\$ to \\$100^{\\circ}\\text{C}\\$.`;
+    expect(normalizeMathMarkdown(raw)).toBe(String.raw`Range: $0^{\circ}\text{C}$ to $100^{\circ}\text{C}$.`);
+  });
+
   it("renders the reported PT100 example as KaTeX instead of literal dollar text", () => {
     const text = String.raw`A PT100 has a range of $0^{\circ}\text{C}$ to $100^{\circ}\text{C}$ and an output of $4\text{ mA}$ to $20\text{ mA}$.`;
     const markup = renderToStaticMarkup(React.createElement(
@@ -20,6 +25,17 @@ describe("lesson maths presentation", () => {
       normalizeMathMarkdown(text),
     ));
     expect(markup).toContain("class=\"katex\"");
+    expect(markup).not.toContain("$0^{");
+  });
+
+  it("renders a doubly escaped saved PT100 sentence as KaTeX", () => {
+    const text = String.raw`A PT100 has a range of \\$0^{\\circ}\\text{C}\\$ to \\$100^{\\circ}\\text{C}\\$.`;
+    const markup = renderToStaticMarkup(React.createElement(
+      ReactMarkdown,
+      { remarkPlugins: [[remarkMath, { singleDollarTextMath: true }]], rehypePlugins: [rehypeKatex] },
+      normalizeMathMarkdown(text),
+    ));
+    expect(markup.match(/class="katex"/g)).toHaveLength(2);
     expect(markup).not.toContain("$0^{");
   });
 
