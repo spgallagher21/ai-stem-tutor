@@ -6,8 +6,15 @@ const MAX_RATE_BUCKETS = 10_000;
 
 let firebaseCerts = { expiresAt: 0, values: {} };
 
+export function firebaseProjectId(env = process.env) {
+  const serverProjectId = String(env.FIREBASE_PROJECT_ID || "").trim();
+  const clientProjectId = String(env.VITE_FIREBASE_PROJECT_ID || "").trim();
+  if (serverProjectId && clientProjectId && serverProjectId !== clientProjectId) return null;
+  return serverProjectId || clientProjectId || "";
+}
+
 async function verifyFirebaseToken(token) {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const projectId = firebaseProjectId();
   if (!projectId) throw new Error("Firebase project is not configured.");
   if (firebaseCerts.expiresAt < Date.now()) {
     const response = await fetch("https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com");
@@ -29,12 +36,20 @@ function clientIp(req) {
 }
 
 export function authenticationMode(env = process.env) {
-  if (env.FIREBASE_PROJECT_ID) return "firebase";
+  const serverProjectId = String(env.FIREBASE_PROJECT_ID || "").trim();
+  const clientProjectId = String(env.VITE_FIREBASE_PROJECT_ID || "").trim();
+  if (serverProjectId && clientProjectId && serverProjectId !== clientProjectId) return "misconfigured";
+  if (firebaseProjectId(env)) return "firebase";
   if (env.ALLOW_LOCAL_UNAUTHENTICATED === "true" && env.VERCEL_ENV !== "production" && env.NODE_ENV !== "production") return "local";
   return "misconfigured";
 }
 
-export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, maxBodyBytes = 20 * 1024 * 1024 } = {}) {
+export function requestAuthenticationMode(env = process.env, { allowGuestByok = false } = {}) {
+  const mode = authenticationMode(env);
+  return mode === "misconfigured" && allowGuestByok ? "guest-byok" : mode;
+}
+
+export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, maxBodyBytes = 20 * 1024 * 1024, allowGuestByok = false } = {}) {
   const contentLength = Number(req.headers["content-length"] || 0);
   if (contentLength > maxBodyBytes) {
     res.status(413).json({ error: "Request is too large." });
@@ -42,9 +57,9 @@ export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, m
   }
 
   let uid = "local";
-  const authMode = authenticationMode();
+  const authMode = requestAuthenticationMode(process.env, { allowGuestByok });
   if (authMode === "misconfigured") {
-    res.status(503).json({ error: "Tutor authentication is not configured." });
+    res.status(503).json({ error: "Tutor authentication is not configured.", errorSource: "app_configuration", retryable: false });
     return null;
   }
   if (authMode === "firebase") {
@@ -79,7 +94,7 @@ export async function secureRequest(req, res, { limit = 30, windowMs = 60_000, m
     }
     while (buckets.size > MAX_RATE_BUCKETS) buckets.delete(buckets.keys().next().value);
   }
-  return { uid };
+  return { uid, authMode };
 }
 
 export async function fetchWithTimeout(url, options, timeoutMs = 45_000) {

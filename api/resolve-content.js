@@ -77,7 +77,7 @@ async function resolve(request) {
 
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.setHeader("Allow", "POST"); return res.status(405).json({ error: "Method not allowed" }); }
-  if (!await secureRequest(req, res, { limit: 40, maxBodyBytes: 100_000 })) return;
+  if (!await secureRequest(req, res, { limit: 40, maxBodyBytes: 100_000, allowGuestByok: true })) return;
   const requests = Array.isArray(req.body?.requests) ? req.body.requests.slice(0, 12) : [];
   const results = [];
   for (const request of requests) {

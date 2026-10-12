@@ -14,12 +14,18 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (!await secureRequest(req, res, { limit: 8, maxBodyBytes: 25 * 1024 * 1024 })) return;
+  const security = await secureRequest(req, res, { limit: 8, maxBodyBytes: 25 * 1024 * 1024, allowGuestByok: true });
+  if (!security) return;
 
   const { apiKey: requestApiKey, displayName, mimeType = "application/pdf", data } = req.body || {};
-  const apiKey = typeof requestApiKey === "string" && requestApiKey.trim()
+  const suppliedApiKey = typeof requestApiKey === "string" ? requestApiKey.trim() : "";
+  const apiKey = suppliedApiKey
     ? requestApiKey.trim()
     : process.env.GEMINI_API_KEY;
+
+  if (security.authMode === "guest-byok" && !suppliedApiKey) {
+    return res.status(503).json({ error: "Tutor sign-in is not configured, so a personal Gemini API key is required.", errorSource: "app_configuration", retryable: false });
+  }
 
   if (!apiKey) return res.status(400).json({ error: "Enter your Gemini API key before uploading files." });
   if (!data) return res.status(400).json({ error: "Missing file data." });

@@ -3,12 +3,12 @@ import { fetchWithTimeout, secureRequest } from "./_security.js";
 // Vercel serverless function. Users bring their own Gemini API key.
 // The key is forwarded only for this request and is not stored by the app.
 
-const DEFAULT_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-flash-latest"];
+const DEFAULT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-flash-lite"];
 const MODELS = (process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || DEFAULT_MODELS.join(","))
   .split(",")
   .map((model) => model.trim())
   .filter(Boolean);
-const DEFAULT_SEARCH_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
+const DEFAULT_SEARCH_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
 const SEARCH_MODELS = (process.env.GEMINI_SEARCH_MODELS || DEFAULT_SEARCH_MODELS.join(","))
   .split(",")
   .map((model) => model.trim())
@@ -57,12 +57,18 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (!await secureRequest(req, res, { limit: 24, maxBodyBytes: 20 * 1024 * 1024 })) return;
+  const security = await secureRequest(req, res, { limit: 24, maxBodyBytes: 20 * 1024 * 1024, allowGuestByok: true });
+  if (!security) return;
 
   const { contents, generationConfig, apiKey: requestApiKey, documentPart, tools } = req.body || {};
-  const apiKey = typeof requestApiKey === "string" && requestApiKey.trim()
+  const suppliedApiKey = typeof requestApiKey === "string" ? requestApiKey.trim() : "";
+  const apiKey = suppliedApiKey
     ? requestApiKey.trim()
     : process.env.GEMINI_API_KEY;
+
+  if (security.authMode === "guest-byok" && !suppliedApiKey) {
+    return res.status(503).json({ error: "Tutor sign-in is not configured, so a personal Gemini API key is required.", errorSource: "app_configuration", retryable: false });
+  }
 
   if (!apiKey) {
     return res.status(400).json({

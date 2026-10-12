@@ -5,8 +5,8 @@ describe("Gemini request routing", () => {
   it("recognises grounded search requests", () => {
     expect(requestUsesGoogleSearch([{ google_search: {} }])).toBe(true);
     expect(requestUsesGoogleSearch(undefined)).toBe(false);
-    expect(modelsForTools([{ google_search: {} }])[0]).toBe("gemini-2.5-flash-lite");
-    expect(modelsForTools(undefined)[0]).toBe("gemini-3.1-flash-lite");
+    expect(modelsForTools([{ google_search: {} }])[0]).toBe("gemini-3.8-flash");
+    expect(modelsForTools(undefined)[0]).toBe("gemini-3.5-flash-lite");
   });
 
   it("extracts safe quota diagnostics", () => {

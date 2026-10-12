@@ -44,7 +44,8 @@ New business logic should be added to a focused domain module with tests rather 
 
 ## Deployment checklist
 
-- Configure `FIREBASE_PROJECT_ID`; missing production authentication makes the API return 503.
+- Configure the complete `VITE_FIREBASE_*` set. Functions reuse `VITE_FIREBASE_PROJECT_ID`; an optional `FIREBASE_PROJECT_ID` alias must match it.
+- Without Firebase, students can still use generation and PDF upload with their own Gemini key. Server-funded AI and handwriting recognition remain unavailable until authentication is configured.
 - Deploy `firestore.rules`.
 - Confirm anonymous authentication is enabled.
 - Configure provider keys or document session-only BYOK usage.
