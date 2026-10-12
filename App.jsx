@@ -1022,7 +1022,10 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ contents, generationConfig, apiKey: trimmedApiKey, documentPart, tools }),
       });
-      const data = await res.json();
+      const responseText = await res.text();
+      let data;
+      try { data = responseText ? JSON.parse(responseText) : {}; }
+      catch { data = { error: `Tutor service returned an unreadable response (status ${res.status}).` }; }
       recordAiUsage(usageEventFromResponse(data, { failed: !res.ok || Boolean(data.error), repair: usageCategory === "repair" }));
       if (!res.ok || data.error) {
         const msg = data.error || `Request failed (status ${res.status}).`;
@@ -1034,7 +1037,8 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
           quotaError.retryAfterMs = diagnosis.cooldownSeconds ? diagnosis.cooldownSeconds * 1000 : 0;
           throw quotaError;
         }
-        if (res.status >= 500 && attempt < retries) {
+        const nonRetryableServiceError = data.retryable === false || data.errorSource === "app_configuration" || [401, 403].includes(res.status);
+        if (res.status >= 500 && !nonRetryableServiceError && attempt < retries) {
           const backoff = Math.min(8000, 700 * 2 ** attempt) + Math.random() * 400;
           onStatus?.("The AI is recharging for a moment...");
           await sleep(backoff);
@@ -1042,7 +1046,7 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
           continue;
         }
         const requestError = new Error(msg);
-        requestError.retryable = res.status >= 500;
+        requestError.retryable = res.status >= 500 && !nonRetryableServiceError;
         throw requestError;
       }
       const candidate = data.candidates?.[0];
