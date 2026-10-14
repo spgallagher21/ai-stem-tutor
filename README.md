@@ -34,6 +34,8 @@ Do not log API keys, authorization headers, uploaded documents, or full student 
 
 ## Architecture
 
+Automatic note enrichment uses public Wikipedia and Europe PMC APIs, followed by Gemini writing and evidence review with the student's existing key. No search-provider key is required. Retrieval is bounded and cached; additions without matching evidence are omitted. Europe PMC passages are abstracts, not full-text reviews. Public services have their own availability limits. Google grounding may still be used by the separate Ask Notes fallback.
+
 - `App.jsx`: application shell and feature screens.
 - Domain modules such as `practiceEngine.js`, `studyEngine.js`, `gradebook.js`, and `validation.js`: deterministic learning and validation logic.
 - `studyStore.js` and `localPdfStore.js`: local IndexedDB persistence.

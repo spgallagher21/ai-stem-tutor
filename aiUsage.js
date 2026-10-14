@@ -61,7 +61,7 @@ export function describeAiFailure(data = {}, status = 0) {
     return {
       message: retrySeconds
         ? `Google Search grounding is temporarily rate-limited${model}. Try again in about ${retrySeconds}s; core notes and questions are unaffected.`
-        : `The web-assisted request was refused by Gemini${model}. ${metric ? `Quota: ${metric}. ` : ""}Provider details: ${rawMessage}`,
+        : `The web-assisted request was refused by Gemini${model}. ${metric ? `Quota: ${metric}. ` : ""}For Gemini 3 models, Google Search grounding requires an eligible paid API project; it is not included in the API free tier. If billing is already enabled, check the project's search allowance and model limits. Provider details: ${rawMessage}`,
       cooldownSeconds: retrySeconds,
       retryable: Boolean(retrySeconds),
     };
