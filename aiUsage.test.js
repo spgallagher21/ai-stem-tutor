@@ -9,13 +9,13 @@ describe("AI usage diagnostics", () => {
 
   it("distinguishes the app limiter from Gemini quota failures", () => {
     expect(describeAiFailure({ errorSource: "app_rate_limit", retryAfterSeconds: 22 }, 429).message).toContain("StudyLoop");
-    expect(describeAiFailure({ requestKind: "search", model: "gemini-2.5-flash-lite" }, 429).message).toContain("Google Search");
+    expect(describeAiFailure({ requestKind: "search", model: "gemini-2.5-flash-lite" }, 429).message).toContain("Provider details");
   });
 
   it("does not tell students to wait for a daily limit", () => {
     const result = describeAiFailure({ quotaMetric: "generate_content_free_tier_requests_per_day", model: "gemini-3.1-flash-lite" }, 429);
     expect(result.retryable).toBe(false);
     expect(result.message).toContain("daily allowance");
-    expect(describeAiFailure({ requestKind: "search", retryAfterSeconds: 3600 }, 429).retryable).toBe(false);
+    expect(describeAiFailure({ requestKind: "search", quotaMetric: "search_requests_per_month" }, 429).message).toContain("monthly");
   });
 });
