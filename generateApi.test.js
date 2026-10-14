@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { extractQuotaInfo, modelsForTools, requestUsesGoogleSearch } from "./api/generate";
+import { canFallbackSearchQuota, extractQuotaInfo, modelsForTools, requestUsesGoogleSearch } from "./api/generate";
 
 describe("Gemini request routing", () => {
+  it("falls back only for model-scoped generation quotas", () => {
+    const quota = (violation) => ({ error: { details: [{ violations: [violation] }] } });
+    expect(canFallbackSearchQuota(quota({ quotaMetric: "generate_content_requests", quotaDimensions: { model: "flash" } }))).toBe(true);
+    expect(canFallbackSearchQuota(quota({ quotaMetric: "grounding_search_requests", quotaDimensions: { model: "flash" } }))).toBe(false);
+    expect(canFallbackSearchQuota(quota({ quotaMetric: "requests_per_project" }))).toBe(false);
+    expect(canFallbackSearchQuota({ error: { message: "Resource exhausted" } })).toBe(false);
+  });
   it("recognises grounded search requests", () => {
     expect(requestUsesGoogleSearch([{ google_search: {} }])).toBe(true);
     expect(requestUsesGoogleSearch(undefined)).toBe(false);

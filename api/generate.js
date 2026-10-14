@@ -51,6 +51,17 @@ export function extractQuotaInfo(data) {
   };
 }
 
+export function canFallbackSearchQuota(data) {
+  const details = Array.isArray(data?.error?.details) ? data.error.details : [];
+  const violations = details.flatMap((detail) => detail?.violations || []);
+  // Shared grounding allowances cannot be recovered by rotating Gemini models.
+  if (/search|grounding/i.test(JSON.stringify(violations))) return false;
+  return violations.length > 0 && violations.every((violation) => (
+    Boolean(violation.quotaDimensions?.model)
+    && /generate.?content|request|token/i.test(`${violation.quotaMetric || ""} ${violation.quotaId || ""}`)
+  ));
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -106,6 +117,7 @@ export default async function handler(req, res) {
   let lastErrMessage = "Gemini request failed.";
   let lastStatus = 502;
   let providerAttempts = 0;
+  let lastQuotaResponse = null;
 
   for (const model of models) {
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -135,7 +147,12 @@ export default async function handler(req, res) {
           const tryNextModel = shouldTryNextModel(r.status, lastErrMessage);
           const retryable = r.status >= 500 && !tryNextModel;
           if (r.status === 429) {
-            return res.status(r.status).json({ error: lastErrMessage, errorSource: "gemini", retryAfterSeconds, model, requestKind, providerAttempts, ...quotaInfo });
+            const quotaResponse = { error: lastErrMessage, errorSource: "gemini", retryAfterSeconds, model, requestKind, providerAttempts, ...quotaInfo };
+            if (requestKind === "search" && canFallbackSearchQuota(data)) {
+              lastQuotaResponse = quotaResponse;
+              break;
+            }
+            return res.status(r.status).json(quotaResponse);
           }
           if (tryNextModel) break;
           if (retryable && attempt < maxAttempts) {
@@ -157,6 +174,7 @@ export default async function handler(req, res) {
     }
   }
 
+  if (lastQuotaResponse) return res.status(429).json({ ...lastQuotaResponse, providerAttempts, triedModels: models });
   return res.status(lastStatus).json({
     error: `${lastErrMessage} Tried models: ${models.join(", ")}.`,
     errorSource: "gemini",

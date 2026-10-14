@@ -34,7 +34,9 @@ export function describeAiFailure(data = {}, status = 0) {
   const metric = String(data.quotaMetric || data.quotaReason || "");
   const model = data.model ? ` (${data.model})` : "";
   const isSearch = data.requestKind === "search";
-  const isDaily = /per.?day|daily|rpd/i.test(`${metric} ${rawMessage}`) || retrySeconds > 120;
+  const isDaily = /per.?day|daily|rpd/i.test(`${metric} ${rawMessage}`);
+  const isMonthly = /per.?month|monthly/i.test(`${metric} ${rawMessage}`);
+  const isSearchQuota = /search|grounding/i.test(metric);
   const isToken = /token|tpm/i.test(`${metric} ${rawMessage}`);
   const isRequestRate = /request|rpm|rate/i.test(`${metric} ${rawMessage}`);
 
@@ -48,9 +50,9 @@ export function describeAiFailure(data = {}, status = 0) {
   if (status !== 429 && !/quota|rate.?limit|resource_exhausted/i.test(rawMessage)) {
     return { message: rawMessage, cooldownSeconds: null, retryable: status >= 500 };
   }
-  if (isSearch && isDaily) {
+  if (isSearch && isSearchQuota && (isDaily || isMonthly)) {
     return {
-      message: `This Google Search allowance has been used for today${model}. Core notes and questions still work; try web-assisted tutoring after the project quota resets.`,
+      message: `This project's ${isMonthly ? "monthly" : "daily"} Google Search allowance has been reached${model}. Web enrichment is paused until the allowance resets or the project's limits change.`,
       cooldownSeconds: null,
       retryable: false,
     };
@@ -59,7 +61,7 @@ export function describeAiFailure(data = {}, status = 0) {
     return {
       message: retrySeconds
         ? `Google Search grounding is temporarily rate-limited${model}. Try again in about ${retrySeconds}s; core notes and questions are unaffected.`
-        : `Google Search grounding is unavailable for this project right now${model}. Core notes and questions are unaffected; check the project's active limits in Google AI Studio.`,
+        : `The web-assisted request was refused by Gemini${model}. ${metric ? `Quota: ${metric}. ` : ""}Provider details: ${rawMessage}`,
       cooldownSeconds: retrySeconds,
       retryable: Boolean(retrySeconds),
     };
