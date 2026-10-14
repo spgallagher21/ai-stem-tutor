@@ -99,10 +99,24 @@ export async function mergePdfSelections(selections) {
   return { bytes: await merged.save(), pageMap };
 }
 
-export async function rasterizePdfPage(sourcePdfBytes, pageNumber, { maxWidth = 1000, quality = 0.7 } = {}) {
+const renderedPageCache = new WeakMap();
+
+export function rasterizePdfPage(sourcePdfBytes, pageNumber, options = {}) {
+  let pages = renderedPageCache.get(sourcePdfBytes);
+  if (!pages) { pages = new Map(); renderedPageCache.set(sourcePdfBytes, pages); }
+  const key = JSON.stringify([pageNumber, options.maxWidth || 1000, options.quality || 0.7]);
+  if (!pages.has(key)) {
+    const pending = renderPdfPage(sourcePdfBytes, pageNumber, options).catch((error) => { pages.delete(key); throw error; });
+    pages.set(key, pending);
+  }
+  return pages.get(key);
+}
+
+async function renderPdfPage(sourcePdfBytes, pageNumber, { maxWidth = 1000, quality = 0.7 } = {}) {
   await waitForGlobal("pdfjsLib");
   const bytes = sourcePdfBytes instanceof Uint8Array ? sourcePdfBytes.slice() : new Uint8Array(sourcePdfBytes).slice();
   const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+  try {
   const safePage = Math.min(Math.max(1, pageNumber), pdf.numPages);
   const page = await pdf.getPage(safePage);
   const baseViewport = page.getViewport({ scale: 1 });
@@ -114,6 +128,7 @@ export async function rasterizePdfPage(sourcePdfBytes, pageNumber, { maxWidth = 
   const context = canvas.getContext("2d");
   await page.render({ canvasContext: context, viewport }).promise;
   return canvas.toDataURL("image/jpeg", quality).split(",")[1];
+  } finally { await pdf.destroy(); }
 }
 
 export function inlinePdfDocumentPart(bytes) {

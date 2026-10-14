@@ -854,9 +854,20 @@ function computeAdaptiveDifficulty(baseDifficulty, bank) {
 
 // --- 2.1 / 2.2 Proactive client-side throttling + backoff with jitter ---
 const CALL_WINDOW_MS = 60000;
-const SOFT_CEILING = 4; // conservative client-side pacing; provider limits vary by project and model
 const callTimestamps = [];
-let quotaCooldownUntil = 0;
+let activeTutorRequests = 0;
+const tutorRequestWaiters = [];
+async function queuedTutorFetch(url, options) {
+  if (activeTutorRequests >= 2) await new Promise((resolve) => tutorRequestWaiters.push(resolve));
+  else activeTutorRequests += 1;
+  try { return await fetch(url, options); }
+  finally {
+    const next = tutorRequestWaiters.shift();
+    if (next) next();
+    else activeTutorRequests -= 1;
+  }
+}
+const quotaCooldownUntil = { standard: 0, search: 0 };
 const IMAGE_CALL_WINDOW_MS = 60000;
 const IMAGE_SOFT_CEILING = 6;
 const imageCallTimestamps = [];
@@ -866,13 +877,11 @@ function pruneCallLog() {
   while (callTimestamps.length && callTimestamps[0] < cutoff) callTimestamps.shift();
 }
 
-function getThrottleWaitMs() {
+function getThrottleWaitMs(kind = "standard") {
   pruneCallLog();
-  const quotaWait = Math.max(0, quotaCooldownUntil - Date.now());
+  const quotaWait = Math.max(0, quotaCooldownUntil[kind] - Date.now());
   if (quotaWait > 0) return quotaWait;
-  if (callTimestamps.length < SOFT_CEILING) return 0;
-  const oldest = callTimestamps[0];
-  return Math.max(0, CALL_WINDOW_MS - (Date.now() - oldest) + 250);
+  return 0;
 }
 
 function isQuotaError(message, status) {
@@ -1001,7 +1010,8 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
   const trimmedApiKey = (apiKey || "").trim();
   if (!trimmedApiKey) throw new Error("Enter your Gemini API key before using the tutor.");
 
-  const waitMs = getThrottleWaitMs();
+  const requestKind = tools?.some((tool) => tool.google_search || tool.googleSearch) ? "search" : "standard";
+  const waitMs = getThrottleWaitMs(requestKind);
   if (waitMs > 0) {
     let remaining = Math.ceil(waitMs / 1000);
     onStatus?.(`The AI needs a few seconds to catch up (${remaining}s)...`);
@@ -1017,7 +1027,7 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
       const token = await auth?.currentUser?.getIdToken();
-      const res = await fetch(GENERATE_ENDPOINT, {
+      const res = await queuedTutorFetch(GENERATE_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ contents, generationConfig, apiKey: trimmedApiKey, documentPart, tools }),
@@ -1031,7 +1041,7 @@ async function callGemini({ contents, generationConfig, apiKey, documentPart, to
         const msg = data.error || `Request failed (status ${res.status}).`;
         if (isQuotaError(msg, res.status)) {
           const diagnosis = describeAiFailure(data, res.status);
-          if (diagnosis.cooldownSeconds) quotaCooldownUntil = Date.now() + diagnosis.cooldownSeconds * 1000;
+          if (diagnosis.cooldownSeconds) quotaCooldownUntil[requestKind] = Date.now() + diagnosis.cooldownSeconds * 1000;
           const quotaError = new Error(diagnosis.message);
           quotaError.retryable = diagnosis.retryable;
           quotaError.retryAfterMs = diagnosis.cooldownSeconds ? diagnosis.cooldownSeconds * 1000 : 0;
@@ -2158,6 +2168,7 @@ function NotePaper({ lesson, onRegenerate, onPractice, onAskNotes, loading }) {
       {lesson.summary && <div className="paper-muted"><strong>Summary:</strong><MathRenderer text={lesson.summary} paper /></div>}
       {lesson.technical_visuals?.some((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)) && <section className="note-section"><h2>Core chemical and circuit notation</h2><div className="visual-grid">{lesson.technical_visuals.filter((visual) => !visual.sectionHeading || !(lesson.sections || []).some((section) => section.heading === visual.sectionHeading)).map((visual, index) => <VisualEnhancementCard key={visual.id || index} visual={visual} />)}</div></section>}
       {lesson.graphs?.some((graph) => !graph.section_heading || !(lesson.sections || []).some((section) => section.heading === graph.section_heading)) && <section className="note-section"><h2>Function and physics graphs</h2>{lesson.graphs.filter((graph) => !graph.section_heading || !(lesson.sections || []).some((section) => section.heading === graph.section_heading)).map((graph) => <GraphView key={graph.id} graph={graph} />)}</section>}
+      {lesson.enrichment_status === "pending" && <div className="enrichment-status" role="status"><strong>Your core notes are ready</strong><p>Verified visuals and online enhancements are being added. You can read and practise now.</p></div>}
       {lesson.source_refs?.length > 0 && (
         <div className="source-panel" aria-label="Lesson sources">
           <strong>Grounded in your notes</strong>
@@ -2553,6 +2564,8 @@ function StemTutor() {
   const [loadingMsg, setLoadingMsg] = useState("");
   const [dashboardModal, setDashboardModal] = useState(null);
   const sessionPdfBytes = useRef(new Map());
+  const documentContextCache = useRef(new Map());
+  const enhancingLessons = useRef(new Set());
   const navigationHistory = useRef([]);
   const dueItems = useMemo(() => dueSubtopics(subjects), [subjects]);
   const deadlinePlan = useMemo(() => buildDeadlinePlan(assessments, subjects, { sessionMinutes: settings.sessionMinutes || 30 }), [assessments, subjects, settings.sessionMinutes]);
@@ -3013,7 +3026,18 @@ Return only topicGroups.`;
     return { bytes, pageIndex: stored?.pageIndex || source.pageIndex || [] };
   };
 
-  const getDocumentContext = async (subject, { queryText, scoped = true, sourceKind = "notes", maxPages = 18 } = {}) => {
+  const getDocumentContext = async (subject, options = {}) => {
+    const signature = JSON.stringify([uid, settings.geminiApiKey, subject.id, subject.meta?.sourceFiles, subject.meta?.examFiles, options]);
+    const cache = documentContextCache.current;
+    const entry = cache.get(signature);
+    if (entry && entry.expiresAt > Date.now()) return entry.promise;
+    const promise = buildDocumentContext(subject, options).catch((error) => { cache.delete(signature); throw error; });
+    cache.set(signature, { promise, expiresAt: Date.now() + 30 * 60 * 1000 });
+    while (cache.size > 8) cache.delete(cache.keys().next().value);
+    return promise;
+  };
+
+  const buildDocumentContext = async (subject, { queryText, scoped = true, sourceKind = "notes", maxPages = 18 } = {}) => {
     const files = sourceKind === "exam" ? subject.meta?.examFiles || [] : subject.meta?.sourceFiles || [];
     if (!files.length) return null;
 
@@ -3589,6 +3613,13 @@ Search before deciding, omit weak or redundant additions, and return only valid 
   };
 
   const generateLesson = async (subject, topic, subtopic, force = false) => {
+    const generationKey = lessonKey(subject.id, subtopic.id);
+    if (force && enhancingLessons.current.has(generationKey)) {
+      showToast("This lesson is still adding its enhancements.", "info");
+      return;
+    }
+    let corePublished = false;
+    const generationId = crypto.randomUUID();
     setLoading(true);
     setLoadingMsg(force ? "Regenerating your lesson..." : "Checking saved notes...");
     try {
@@ -3598,7 +3629,9 @@ Search before deciding, omit weak or redundant additions, and return only valid 
         const cachedLesson = cached?.exists() ? cached.data() : await getArtifact(uid, "lesson", key);
         if (cachedLesson) {
           const savedBank = await loadQuestionBank(key);
-          setLesson(cachedLesson);
+          setLesson(cachedLesson.enrichment_status === "pending" && !enhancingLessons.current.has(key)
+            ? { ...cachedLesson, enrichment_status: "skipped", enrichment_message: "The previous enhancement pass was interrupted. Your saved core notes are complete; regenerate when you want to retry enhancements." }
+            : cachedLesson);
           setActive({ topic, subtopic });
           setQuestionBank(savedBank);
           setViewingBankQuestion(null);
@@ -3668,29 +3701,43 @@ Before returning, silently self-check every equation, claim, and worked-example 
         return validateLesson(rawLesson, documentContext?.pages || []);
       }, { attempts: 2, onStatus: setLoadingMsg, label: "Note generation" });
       finalLesson.verified_calculations = verifyCalculationRequests(finalLesson.calculation_requests);
-      const recognizedCoreVisuals = await recognizeCoreVisualsFromSourcePages(finalLesson, documentContext, subtopic);
-      finalLesson.chemical_structures = [...(finalLesson.chemical_structures || []), ...recognizedCoreVisuals.chemical_structures];
-      finalLesson.circuits = [...(finalLesson.circuits || []), ...recognizedCoreVisuals.circuits];
-      const technical_visuals = await resolveCoreTechnicalVisuals(finalLesson, subject);
-      const supplementary_images = await buildSupplementaryImages(finalLesson, documentContext, subtopic);
-      const enrichmentPlan = await buildGroundedLessonEnrichment({ ...finalLesson, supplementary_images }, subject, topic, subtopic);
-      setLoadingMsg("Resolving and verifying lesson visuals...");
-      const visual_enhancements = await resolveOptionalVisualRequests(subject, enrichmentPlan.visual_requests);
-      const payload = { ...finalLesson, technical_visuals, supplementary_images, online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, enrichment_status: enrichmentPlan.enrichment_status, enrichment_message: enrichmentPlan.enrichment_message, visual_enhancements, enrichmentVersion: 1, question: null, generatedAt: hasFirebase ? serverTimestamp() : Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1 };
-      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
-      await saveArtifact(uid, "lesson", key, { ...payload, generatedAt: Date.now() });
-      setLesson(payload);
+      const corePayload = { ...finalLesson, generationId, question: null, generatedAt: Date.now(), notesVersion: (lesson?.notesVersion || 0) + 1, enrichment_status: "pending", technical_visuals: [], supplementary_images: [], online_enrichments: [], visual_enhancements: [] };
+      await saveArtifact(uid, "lesson", key, corePayload);
+      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), corePayload);
+      setLesson(corePayload);
+      corePublished = true;
+      enhancingLessons.current.add(key);
+      setQuestionBank(await loadQuestionBank(key));
+      setViewingBankQuestion(null);
       setActive({ topic, subtopic });
       setPhase("notes");
       navigateTo("learn");
       setLessonStatus((prev) => new Set([...prev, subtopic.id]));
-      setQuestionBank([]);
-      setViewingBankQuestion(null);
+      setLoading(false);
+      const [recognizedCoreVisuals, supplementary_images] = await Promise.all([
+        recognizeCoreVisualsFromSourcePages(finalLesson, documentContext, subtopic),
+        buildSupplementaryImages(finalLesson, documentContext, subtopic),
+      ]);
+      finalLesson.chemical_structures = [...(finalLesson.chemical_structures || []), ...recognizedCoreVisuals.chemical_structures];
+      finalLesson.circuits = [...(finalLesson.circuits || []), ...recognizedCoreVisuals.circuits];
+      const [technical_visuals, enrichmentPlan] = await Promise.all([
+        resolveCoreTechnicalVisuals(finalLesson, subject),
+        buildGroundedLessonEnrichment({ ...finalLesson, supplementary_images }, subject, topic, subtopic),
+      ]);
+      setLoadingMsg("Resolving and verifying lesson visuals...");
+      const visual_enhancements = await resolveOptionalVisualRequests(subject, enrichmentPlan.visual_requests);
+      const payload = { ...corePayload, ...finalLesson, technical_visuals, supplementary_images, online_enrichments: enrichmentPlan.enrichments, enrichment_sources: enrichmentPlan.enrichment_sources, enrichment_status: enrichmentPlan.enrichment_status, enrichment_message: enrichmentPlan.enrichment_message, visual_enhancements, enrichmentVersion: 1 };
+      if (hasFirebase && db) await setDoc(doc(db, "users", uid, "lessons", key), payload);
+      await saveArtifact(uid, "lesson", key, { ...payload, generatedAt: Date.now() });
+      setLesson((current) => current?.generationId === generationId ? { ...payload, generationId, question: current.question } : current);
+      setLessonStatus((prev) => new Set([...prev, subtopic.id]));
       if (enrichmentPlan.enrichment_status === "skipped") showToast("Core lesson generated successfully. Optional online enrichment was skipped; the reason is shown in the notes.", "info");
     } catch (err) {
+      if (corePublished) setLesson((current) => current?.generationId === generationId ? { ...current, enrichment_status: "skipped", enrichment_message: "Some enhancements could not finish. Your saved core notes are ready." } : current);
       showToast(err.message, "error");
     } finally {
-      setLoading(false);
+      if (corePublished) enhancingLessons.current.delete(generationKey);
+      if (!corePublished) setLoading(false);
     }
   };
 
