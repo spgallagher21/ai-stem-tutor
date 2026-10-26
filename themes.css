@@ -629,3 +629,20 @@ select:focus-visible {
 .paper-muted {
   color: #6b6459;
 }
+
+.image-search-card {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid #b6c6d8;
+  border-radius: 10px;
+  background: #edf3f8;
+  color: #182a3b;
+}
+.image-search-card label, .image-search-card small { display: block; margin: 10px 0; }
+.image-search-card .input { width: 100%; margin-top: 6px; background: #fff; color: #182a3b; border-color: #7a91a7; }
+.image-search-card .btn { background: #173d61; color: #fff; border-color: #173d61; text-decoration: none; }
+.annotation-tools { margin: 14px 0; padding: 16px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; }
+.annotation-tools button { margin: 8px 8px 0 0; }
+.annotation-tools blockquote { white-space: pre-wrap; overflow-wrap: anywhere; border-left: 4px solid #e0b600; padding-left: 12px; margin: 12px 0; }
+.annotation-bubble { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.annotation-bubble summary { cursor: pointer; overflow-wrap: anywhere; }
